@@ -17,6 +17,8 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "C4"]
 [tool.ruff.lint.per-file-ignores]
 # Tests: allow assert, magic numbers, nested with, print
 "tests/**" = ["S101", "PLR2004", "SIM117", "T20"]
+# build_warehouse.py: SQL string literals exceed line length — not reformattable
+"src/build_warehouse.py" = ["E501"]
 
 # ── Mypy (strict type checking) ──────────────────────────────────────────────
 [tool.mypy]
@@ -30,8 +32,10 @@ addopts = "--cov=src --cov-report=term-missing --cov-fail-under=60"
 
 # ── Coverage ─────────────────────────────────────────────────────────────────
 [tool.coverage.run]
-# These modules contain openpyxl / file I/O heavy logic; tested via integration
+# These modules contain openpyxl / file I/O heavy logic or live API calls;
+# tested via integration rather than unit tests.
 omit = [
     "src/build_excel_model.py",
     "src/build_notebooklm_bundle.py",
+    "src/select_models.py",
 ]
