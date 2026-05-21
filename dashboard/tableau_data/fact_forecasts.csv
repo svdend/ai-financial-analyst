@@ -1,1 +1,1 @@
-period_end,fiscal_year,fiscal_period,line_item,model,forecast_value,lower_80,upper_80,lower_95,upper_95
+ticker,model,period_end,yhat,yhat_lower_80,yhat_upper_80,yhat_lower_95,yhat_upper_95

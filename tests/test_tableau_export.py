@@ -187,6 +187,31 @@ def test_fact_financials_derived_metrics_present(tmp_path: Path) -> None:
     ), f"No derived metrics found in fact_financials; got line_items: {df['line_item'].unique()}"
 
 
+def test_fact_financials_no_ytd_duplicates(tmp_path: Path) -> None:
+    """fact_financials must have at most one row per (line_item, period_end, fiscal_period).
+
+    SEC XBRL filings report both 3-month standalone and YTD cumulative values
+    for the same concept and period_end.  The export must deduplicate these,
+    keeping only the standalone quarterly value (minimum absolute value).
+    """
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _export_fact_financials(con)
+    finally:
+        con.close()
+
+    dupes = df.duplicated(
+        subset=["line_item", "period_end", "fiscal_year", "fiscal_period"], keep=False
+    )
+    dup_rows = df[dupes][["line_item", "period_end", "fiscal_period", "value"]]
+    assert (
+        len(dup_rows) == 0
+    ), f"YTD duplicates still present after deduplication:\n{dup_rows.to_string()}"
+
+
 # ── _export_fact_forecasts ────────────────────────────────────────────────────
 
 

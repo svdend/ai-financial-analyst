@@ -209,7 +209,20 @@ def _fiscal_to_calendar_quarter(
 
 
 def _export_fact_financials(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
-    """Long-format actuals with provenance columns."""
+    """Long-format actuals with provenance columns.
+
+    Deduplication note
+    ------------------
+    SEC XBRL filings report both a 3-month standalone value and a YTD
+    cumulative value for the same concept and period_end date (e.g. a Q2
+    10-Q includes both the Q2 standalone and the H1 YTD revenue figure).
+    Both rows pass the ``period_type = 'Q'`` filter because they share the
+    same ``fiscal_period``.  We resolve duplicates by keeping the row with
+    the minimum absolute value per (ticker, line_item, period_end,
+    fiscal_year, fiscal_period) group — the standalone quarterly value is
+    always ≤ the YTD cumulative for income-statement and cash-flow items,
+    and balance-sheet items (point-in-time) are identical across contexts.
+    """
     # Pull from v_canonical_facts — already one row per (line_item, period_end)
     df = con.execute("""
         SELECT
@@ -231,6 +244,22 @@ def _export_fact_financials(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
         WHERE period_type = 'Q'
         ORDER BY line_item, fiscal_year, fiscal_period
     """).fetchdf()
+
+    # Drop YTD duplicates: sort by abs(value) ascending, keep first per group.
+    dedup_key = ["ticker", "line_item", "period_end", "fiscal_year", "fiscal_period"]
+    if len(df) > 0:
+        n_before = len(df)
+        df["_abs_value"] = df["value"].abs()
+        df = (
+            df.sort_values("_abs_value")
+            .drop_duplicates(subset=dedup_key, keep="first")
+            .drop(columns=["_abs_value"])
+        )
+        n_removed = n_before - len(df)
+        if n_removed > 0:
+            logger.info(
+                "  Removed %d YTD duplicate rows (kept standalone quarterly values)", n_removed
+            )
 
     # Add derived metrics from v_key_metrics
     metrics = con.execute("""

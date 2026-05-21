@@ -1,4 +1,4 @@
-metric_key,label,category,unit
+line_item,label,category,unit
 Revenue,Revenue,Income Statement,USD
 CostOfRevenue,Cost of Revenue,Income Statement,USD
 GrossProfit,Gross Profit,Income Statement,USD
@@ -8,13 +8,18 @@ NetIncome,Net Income,Income Statement,USD
 Cash,Cash & Equivalents,Balance Sheet,USD
 AccountsReceivable,Accounts Receivable,Balance Sheet,USD
 Inventory,Inventory,Balance Sheet,USD
-TotalAssets,Total Assets,Balance Sheet,USD
 AccountsPayable,Accounts Payable,Balance Sheet,USD
+DeferredRevenue,Deferred Revenue,Balance Sheet,USD
+TotalAssets,Total Assets,Balance Sheet,USD
 TotalLiabilities,Total Liabilities,Balance Sheet,USD
 TotalEquity,Total Equity,Balance Sheet,USD
 OperatingCashFlow,Operating Cash Flow,Cash Flow,USD
-GrossMarginPct,Gross Margin %,Ratios,PCT
-OperatingMarginPct,Operating Margin %,Ratios,PCT
-DSO,Days Sales Outstanding,Working Capital,DAYS
-DIO,Days Inventory Outstanding,Working Capital,DAYS
-DPO,Days Payable Outstanding,Working Capital,DAYS
+CapEx,Capital Expenditures,Cash Flow,USD
+FreeCashFlow,Free Cash Flow,Cash Flow,USD
+StockBasedCompensation,Stock-Based Compensation,Cash Flow,USD
+gross_margin_pct,Gross Margin %,Margins,pct
+operating_margin_pct,Operating Margin %,Margins,pct
+net_margin_pct,Net Margin %,Margins,pct
+fcf_margin_pct,FCF Margin %,Margins,pct
+revenue_yoy_growth,Revenue YoY Growth,Growth,pct
+revenue_qoq_growth,Revenue QoQ Growth,Growth,pct
