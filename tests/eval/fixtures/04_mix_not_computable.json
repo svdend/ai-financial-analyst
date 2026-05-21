@@ -1,0 +1,49 @@
+{
+  "_description": "MIX-NOT-COMPUTABLE: variance shape suggests mix shift but consolidated-only data cannot decompose. Expected: commentary hedges and says 'not computable from consolidated data'.",
+  "_expected_driver": "mix_not_computable",
+  "_expected_outcome": "commentary_hedges_mix",
+  "ticker": "TESTCO",
+  "fiscal_year": 2026,
+  "fiscal_period": "Q4",
+  "latest_period_end": "2026-10-31",
+  "variance_facts": {
+    "revenue_actual": 2150000000.0,
+    "revenue_yoy": 2000000000.0,
+    "revenue_yoy_growth_pct": 0.075,
+    "revenue_prior_forecast": 2050000000.0,
+    "revenue_variance_vs_forecast": 100000000.0,
+    "revenue_variance_pct_vs_forecast": 0.049,
+    "revenue_consensus": null,
+    "gross_profit_actual": 1462000000.0,
+    "gross_margin_pct_actual": 0.68,
+    "gross_margin_pct_yoy": 0.7,
+    "gross_margin_pct_yoy_delta": -0.02,
+    "operating_income_actual": 193500000.0,
+    "operating_margin_pct_actual": 0.09,
+    "operating_margin_pct_yoy": 0.11,
+    "operating_margin_pct_yoy_delta": -0.02,
+    "fcf_actual": 250000000.0,
+    "fcf_yoy": 300000000.0,
+    "fcf_yoy_delta": -50000000.0,
+    "fcf_yoy_growth_pct": -0.167,
+    "revenue_actual_fact_id": "mix004abc",
+    "revenue_actual_accession": "0009990000-26-004001",
+    "revenue_actual_filing_url": "https://www.sec.gov/Archives/edgar/data/9990000/000999000026004001/",
+    "revenue_prior_forecast_model": "prophet|autoarima|lasso",
+    "fiscal_year": 2026,
+    "fiscal_period": "Q4",
+    "latest_period_end": "2026-10-31"
+  },
+  "quality_facts": {
+    "has_restatement": false,
+    "missing_quarters": null,
+    "has_physical_inventory": false
+  },
+  "_driver_check": {
+    "volume_term": 150000000.0,
+    "margin_term": -40000000.0,
+    "note": "Both volume and margin contribute; both Product and S&S would be needed to decompose mix shift. Consolidated-only data: mix shift suspected, not computable. No single dominant driver determinable.",
+    "dominant": "mix_not_computable",
+    "disaggregated_revenue_available": false
+  }
+}

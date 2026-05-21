@@ -1,0 +1,43 @@
+{
+  "_description": "RESTATEMENT scenario: has_restatement=TRUE. Expected: pipeline REFUSES (exits non-zero), never calls Anthropic API.",
+  "_expected_driver": null,
+  "_expected_outcome": "pipeline_refuses",
+  "ticker": "TESTCO",
+  "fiscal_year": 2025,
+  "fiscal_period": "Q2",
+  "latest_period_end": "2025-04-30",
+  "variance_facts": {
+    "revenue_actual": 1950000000.0,
+    "revenue_yoy": 1800000000.0,
+    "revenue_yoy_growth_pct": 0.083,
+    "revenue_prior_forecast": 1900000000.0,
+    "revenue_variance_vs_forecast": 50000000.0,
+    "revenue_variance_pct_vs_forecast": 0.026,
+    "revenue_consensus": null,
+    "gross_profit_actual": 1365000000.0,
+    "gross_margin_pct_actual": 0.7,
+    "gross_margin_pct_yoy": 0.69,
+    "gross_margin_pct_yoy_delta": 0.01,
+    "operating_income_actual": 175500000.0,
+    "operating_margin_pct_actual": 0.09,
+    "operating_margin_pct_yoy": 0.088,
+    "operating_margin_pct_yoy_delta": 0.002,
+    "fcf_actual": 220000000.0,
+    "fcf_yoy": 190000000.0,
+    "fcf_yoy_delta": 30000000.0,
+    "fcf_yoy_growth_pct": 0.158,
+    "revenue_actual_fact_id": "rst005abc",
+    "revenue_actual_accession": "0009990000-25-005001",
+    "revenue_actual_filing_url": "https://www.sec.gov/Archives/edgar/data/9990000/000999000025005001/",
+    "revenue_prior_forecast_model": "prophet",
+    "fiscal_year": 2025,
+    "fiscal_period": "Q2",
+    "latest_period_end": "2025-04-30"
+  },
+  "quality_facts": {
+    "has_restatement": true,
+    "missing_quarters": null,
+    "has_physical_inventory": false,
+    "_note": "10-K/A amendment filed; revenue restated from $1.95B to $1.87B pending re-audit."
+  }
+}

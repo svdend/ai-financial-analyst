@@ -1,0 +1,48 @@
+{
+  "_description": "VOLUME-driven scenario: revenue up 8% YoY, gross margin flat (within 0.2 pts). Expected dominant driver = 'volume'.",
+  "_expected_driver": "volume",
+  "_expected_outcome": "commentary_contains_driver",
+  "ticker": "TESTCO",
+  "fiscal_year": 2026,
+  "fiscal_period": "Q1",
+  "latest_period_end": "2026-01-31",
+  "variance_facts": {
+    "revenue_actual": 2160000000.0,
+    "revenue_yoy": 2000000000.0,
+    "revenue_yoy_growth_pct": 0.08,
+    "revenue_prior_forecast": 2100000000.0,
+    "revenue_variance_vs_forecast": 60000000.0,
+    "revenue_variance_pct_vs_forecast": 0.029,
+    "revenue_consensus": null,
+    "gross_profit_actual": 1512000000.0,
+    "gross_margin_pct_actual": 0.7,
+    "gross_margin_pct_yoy": 0.699,
+    "gross_margin_pct_yoy_delta": 0.001,
+    "operating_income_actual": 259200000.0,
+    "operating_margin_pct_actual": 0.12,
+    "operating_margin_pct_yoy": 0.12,
+    "operating_margin_pct_yoy_delta": 0.0,
+    "fcf_actual": 350000000.0,
+    "fcf_yoy": 310000000.0,
+    "fcf_yoy_delta": 40000000.0,
+    "fcf_yoy_growth_pct": 0.129,
+    "revenue_actual_fact_id": "vol001abc",
+    "revenue_actual_accession": "0009990000-26-001001",
+    "revenue_actual_filing_url": "https://www.sec.gov/Archives/edgar/data/9990000/000999000026001001/",
+    "revenue_prior_forecast_model": "prophet|autoarima|lasso",
+    "fiscal_year": 2026,
+    "fiscal_period": "Q1",
+    "latest_period_end": "2026-01-31"
+  },
+  "quality_facts": {
+    "has_restatement": false,
+    "missing_quarters": null,
+    "has_physical_inventory": false
+  },
+  "_driver_check": {
+    "volume_term": 160000000.0,
+    "margin_term": 2000000.0,
+    "dominant": "volume",
+    "note": "volume_term >> margin_term: revenue change dominates, margins flat"
+  }
+}

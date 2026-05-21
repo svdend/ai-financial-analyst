@@ -1,0 +1,58 @@
+{
+  "_description": "ONE-TIME scenario: revenue up 15% but one_time=TRUE on a $200M acquisition revenue fact. Expected dominant driver = 'one-time'.",
+  "_expected_driver": "one-time",
+  "_expected_outcome": "commentary_contains_driver",
+  "ticker": "TESTCO",
+  "fiscal_year": 2026,
+  "fiscal_period": "Q3",
+  "latest_period_end": "2026-07-31",
+  "variance_facts": {
+    "revenue_actual": 2300000000.0,
+    "revenue_yoy": 2000000000.0,
+    "revenue_yoy_growth_pct": 0.15,
+    "revenue_prior_forecast": 2050000000.0,
+    "revenue_variance_vs_forecast": 250000000.0,
+    "revenue_variance_pct_vs_forecast": 0.122,
+    "revenue_consensus": null,
+    "gross_profit_actual": 1587000000.0,
+    "gross_margin_pct_actual": 0.69,
+    "gross_margin_pct_yoy": 0.7,
+    "gross_margin_pct_yoy_delta": -0.01,
+    "operating_income_actual": 253000000.0,
+    "operating_margin_pct_actual": 0.11,
+    "operating_margin_pct_yoy": 0.12,
+    "operating_margin_pct_yoy_delta": -0.01,
+    "fcf_actual": 290000000.0,
+    "fcf_yoy": 310000000.0,
+    "fcf_yoy_delta": -20000000.0,
+    "fcf_yoy_growth_pct": -0.065,
+    "revenue_actual_fact_id": "ot003abc",
+    "revenue_actual_accession": "0009990000-26-003001",
+    "revenue_actual_filing_url": "https://www.sec.gov/Archives/edgar/data/9990000/000999000026003001/",
+    "revenue_prior_forecast_model": "prophet|autoarima|lasso",
+    "fiscal_year": 2026,
+    "fiscal_period": "Q3",
+    "latest_period_end": "2026-07-31"
+  },
+  "quality_facts": {
+    "has_restatement": false,
+    "missing_quarters": null,
+    "has_physical_inventory": false
+  },
+  "one_time_items": [
+    {
+      "description": "Acquisition revenue from DataCorp acquisition (closed Q3 2026)",
+      "amount": 200000000.0,
+      "one_time": true,
+      "accession": "0009990000-26-003001",
+      "fact_id": "ot003xyz"
+    }
+  ],
+  "_driver_check": {
+    "one_time_amount": 200000000.0,
+    "total_delta": 300000000.0,
+    "one_time_share": 0.667,
+    "dominant": "one-time",
+    "note": "one-time acquisition revenue > 30% of total delta and explicitly tagged one_time=TRUE"
+  }
+}
