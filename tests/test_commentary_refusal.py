@@ -9,6 +9,8 @@ No API calls are made in these tests — refusal happens before Step 4.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from src.generate_commentary import RefusalError, _check_refusals
@@ -44,22 +46,35 @@ def test_refusal_on_restatement_true() -> None:
         _check_refusals(_VALID_VARIANCE_ROW, quality)
 
 
-def test_refusal_on_restatement_true_does_not_call_api(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies no Anthropic SDK call is made when has_restatement=TRUE."""
+def test_refusal_on_restatement_true_does_not_call_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """generate() refuses on has_restatement=TRUE without instantiating anthropic.Anthropic."""
     import anthropic
 
-    call_log: list[str] = []
+    from src import generate_commentary as gc
 
-    def mock_create(*args: object, **kwargs: object) -> None:
-        call_log.append("called")
+    constructor_calls: list[None] = []
 
-    monkeypatch.setattr(anthropic.Anthropic, "messages", property(lambda self: None))  # type: ignore[attr-defined]
+    def _refuse_construct(*_args: object, **_kwargs: object) -> None:
+        constructor_calls.append(None)
+        raise AssertionError("anthropic.Anthropic() must not be called on refusal")
 
-    quality = {**_CLEAN_QUALITY_ROW, "has_restatement": True}
-    with pytest.raises(RefusalError):
-        _check_refusals(_VALID_VARIANCE_ROW, quality)
+    monkeypatch.setattr(anthropic, "Anthropic", _refuse_construct)
+    monkeypatch.setattr(
+        gc,
+        "_pull_variance_data",
+        lambda _db: (_VALID_VARIANCE_ROW, {**_CLEAN_QUALITY_ROW, "has_restatement": True}),
+    )
 
-    assert not call_log, "Anthropic API must NOT be called when has_restatement=TRUE"
+    fake_config = tmp_path / "company.yaml"
+    fake_config.write_text("ticker: TEST\n")
+    monkeypatch.setattr(gc, "_CONFIG_PATH", fake_config)
+
+    with pytest.raises(RefusalError, match="has_restatement"):
+        gc.generate(ticker="TEST", db_path=tmp_path / "ignored.duckdb")
+
+    assert not constructor_calls, "anthropic.Anthropic must NOT be constructed on refusal"
 
 
 # ── Missing-quarters refusal ──────────────────────────────────────────────────
