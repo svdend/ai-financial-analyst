@@ -131,24 +131,30 @@ def _load_history(
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         hist_is = con.execute(f"""
-            SELECT * FROM v_income_statement_quarterly
-            WHERE period_type = 'Q'
-            ORDER BY fiscal_year, fiscal_period
-            LIMIT {_N_HIST}
+            SELECT * FROM (
+                SELECT * FROM v_income_statement_quarterly
+                WHERE period_type = 'Q'
+                ORDER BY fiscal_year DESC, fiscal_period DESC
+                LIMIT {_N_HIST}
+            ) ORDER BY fiscal_year, fiscal_period
         """).fetchdf()
 
         hist_bs = con.execute(f"""
-            SELECT * FROM v_balance_sheet_quarterly
-            WHERE period_type = 'Q'
-            ORDER BY fiscal_year, fiscal_period
-            LIMIT {_N_HIST}
+            SELECT * FROM (
+                SELECT * FROM v_balance_sheet_quarterly
+                WHERE period_type = 'Q'
+                ORDER BY fiscal_year DESC, fiscal_period DESC
+                LIMIT {_N_HIST}
+            ) ORDER BY fiscal_year, fiscal_period
         """).fetchdf()
 
         hist_cf = con.execute(f"""
-            SELECT * FROM v_cash_flow_quarterly
-            WHERE period_type = 'Q'
-            ORDER BY fiscal_year, fiscal_period
-            LIMIT {_N_HIST}
+            SELECT * FROM (
+                SELECT * FROM v_cash_flow_quarterly
+                WHERE period_type = 'Q'
+                ORDER BY fiscal_year DESC, fiscal_period DESC
+                LIMIT {_N_HIST}
+            ) ORDER BY fiscal_year, fiscal_period
         """).fetchdf()
 
         dq = con.execute("SELECT * FROM v_data_quality").fetchdf()
