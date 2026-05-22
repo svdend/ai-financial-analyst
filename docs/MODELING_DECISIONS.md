@@ -108,6 +108,16 @@ The GAAP_OCF_residual check validates that the simplified model doesn't material
 diverge from reported GAAP OCF (threshold: $5M), catching the worst-case simplification
 errors.
 
+**Why $5M and not $1M or $10M?** A mid-cap enterprise tech company runs a few billion
+dollars of revenue per quarter, so $5M sits at roughly 0.1–0.25% of quarterly top-line —
+small enough to catch a structural OtherWC omission, loose enough to absorb rounding
+and the immaterial line items the simplification deliberately ignores. This is a
+portfolio-project policy choice, not a universal rule. The right threshold depends on
+the use case: audit-grade reconciliation needs much tighter (≤$100K), while a
+directional-forecast tool can tolerate ~1% of revenue. The constant lives at
+`_OCF_RESIDUAL_TOL` in `src/build_excel_model.py` (line 68) and is meant to be tuned per
+deployment.
+
 ---
 
 ## 6. Why Python-side BalanceCheck instead of openpyxl data_only?
