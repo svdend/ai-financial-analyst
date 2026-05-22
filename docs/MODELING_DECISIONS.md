@@ -12,9 +12,9 @@ and the trade-offs considered. It is written for a technical interviewer who mig
 narrative only. Every number cited in the commentary must appear verbatim in the
 input JSON.
 
-**Rationale:** The Anthropic blog post
-["Building LLM applications for production"](https://www.anthropic.com/) cites Kepler
-Finance's pattern as a best practice for financial applications: *"In finance, the model
+**Rationale:** A common pattern in production financial LLM applications (sometimes
+called the "reasoning vs. computation split") is to do all arithmetic in deterministic
+code and let the model write narrative only. The motivation: *"in finance, the model
 can't be the whole system."* LLMs are unreliable calculators — they hallucinate numeric
 outputs, particularly with large dollar amounts, percentage conversions, and YoY
 arithmetic. Pre-computing all variances in Python and feeding formatted strings (e.g.
@@ -107,6 +107,16 @@ explicitly documented in the Sources sheet and in the Limitations section of the
 The GAAP_OCF_residual check validates that the simplified model doesn't materially
 diverge from reported GAAP OCF (threshold: $5M), catching the worst-case simplification
 errors.
+
+**Why $5M and not $1M or $10M?** A mid-cap enterprise tech company runs a few billion
+dollars of revenue per quarter, so $5M sits at roughly 0.1–0.25% of quarterly top-line —
+small enough to catch a structural OtherWC omission, loose enough to absorb rounding
+and the immaterial line items the simplification deliberately ignores. This is a
+portfolio-project policy choice, not a universal rule. The right threshold depends on
+the use case: audit-grade reconciliation needs much tighter (≤$100K), while a
+directional-forecast tool can tolerate ~1% of revenue. The constant lives at
+`_OCF_RESIDUAL_TOL` in `src/build_excel_model.py` (line 68) and is meant to be tuned per
+deployment.
 
 ---
 

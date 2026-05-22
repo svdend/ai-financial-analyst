@@ -191,6 +191,10 @@ Five ground-truth scenarios with deterministic expected outputs:
 | RESTATEMENT | has_restatement=TRUE | Exit 1; no API call |
 
 Driver classification is pure Python arithmetic — no LLM call needed for the test.
+The harness builds synthetic commentary strings (`_make_mock_commentary`) and runs
+them through the real refusal logic and hallucination guard, validating the
+**plumbing around the LLM** rather than the LLM itself. End-to-end live-model
+evaluation is v2 work.
 
 ---
 

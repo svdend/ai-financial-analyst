@@ -147,11 +147,24 @@ def _pull_variance_data(db_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 # ── Step 2: Refusal checks ────────────────────────────────────────────────────
 
 
+def _is_truthy(val: Any) -> bool:
+    """Normalize SQL/parquet booleans to Python bool.
+
+    Accepts native bool, numeric 0/1, and case-insensitive strings
+    ('true'/'false'/'1'/'0'/'yes'/'no'/''). Anything else falls back to bool(val).
+    """
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes", "y", "t")
+    return bool(val)
+
+
 def _check_refusals(variance_row: dict[str, Any], quality_row: dict[str, Any]) -> None:
     """Raise RefusalError if any data-integrity condition is violated.
 
     Conditions:
     - ``has_restatement`` is TRUE in v_data_quality (10-K/A filed; numbers in flux)
+    - ``has_going_concern_doubt`` is TRUE (auditor flagged substantial doubt)
+    - ``has_material_weakness`` is TRUE (material weakness in ICFR disclosed)
     - ``missing_quarters`` is non-empty covering the variance window
     - fiscal_year or fiscal_period is None/NaN in variance data
 
@@ -163,15 +176,24 @@ def _check_refusals(variance_row: dict[str, Any], quality_row: dict[str, Any]) -
         RefusalError: On any integrity condition violation.
     """
     # Restatement check
-    has_restatement = quality_row.get("has_restatement", False)
-    if (
-        has_restatement
-        and str(has_restatement).upper() not in ("FALSE", "0", "NONE", "")
-        and bool(has_restatement)
-    ):
+    if _is_truthy(quality_row.get("has_restatement", False)):
         raise RefusalError(
             "REFUSED: v_data_quality.has_restatement=TRUE — a 10-K/A amendment was filed. "
             "Numbers may be in flux. Re-run after the amended filing is incorporated."
+        )
+
+    # Going-concern doubt check
+    if _is_truthy(quality_row.get("has_going_concern_doubt", False)):
+        raise RefusalError(
+            "REFUSED: v_data_quality.has_going_concern_doubt=TRUE — auditor flagged "
+            "substantial doubt about going-concern. Requires human review."
+        )
+
+    # Material-weakness in ICFR check
+    if _is_truthy(quality_row.get("has_material_weakness", False)):
+        raise RefusalError(
+            "REFUSED: v_data_quality.has_material_weakness=TRUE — material weakness "
+            "in ICFR disclosed. Requires human review."
         )
 
     # Missing quarters check
@@ -210,19 +232,13 @@ def _fmt_dollars(val: float | None) -> str | None:
     neg = v < 0
     abs_v = abs(v)
     if abs_v >= 1e9:
-        s = f"${abs_v / 1e9:.2g}B"
+        s = f"${abs_v / 1e9:.1f}B"
     elif abs_v >= 1e6:
-        s = f"${abs_v / 1e6:.2g}M"
+        s = f"${abs_v / 1e6:.1f}M"
     elif abs_v >= 1e3:
         s = f"${abs_v / 1e3:.2g}K"
     else:
         s = f"${abs_v:.2g}"
-    # Ensure at least one decimal place for B/M/K values for readability
-    # Re-format with one decimal place for B figures
-    if abs_v >= 1e9:
-        s = f"${abs_v / 1e9:.1f}B"
-    elif abs_v >= 1e6:
-        s = f"${abs_v / 1e6:.1f}M"
     return f"-{s}" if neg else s
 
 
@@ -318,6 +334,15 @@ def _build_payload(
         "fcf_actual": _entry(_fmt_dollars(variance_row.get("fcf_actual"))),
         "fcf_yoy": _entry(_fmt_dollars(variance_row.get("fcf_yoy"))),
         "fcf_yoy_growth_pct": _entry(_fmt_pct(variance_row.get("fcf_yoy_growth_pct"))),
+        # Billings (derived: revenue + Δ deferred revenue)
+        "billings_actual": _entry(_fmt_dollars(variance_row.get("billings_actual"))),
+        "billings_yoy": _entry(_fmt_dollars(variance_row.get("billings_yoy"))),
+        "billings_yoy_growth_pct": _entry(_fmt_pct(variance_row.get("billings_yoy_growth_pct"))),
+        "billings_provenance": (
+            "derived from revenue + Δ(deferred revenue); "
+            "deferred revenue sourced from ContractWithCustomerLiabilityCurrent "
+            "(or DeferredRevenueCurrent) — current portion only"
+        ),
         # Data quality context
         "has_restatement": bool(quality_row.get("has_restatement", False)),
         "has_physical_inventory": bool(quality_row.get("has_physical_inventory", False)),
@@ -328,14 +353,17 @@ def _build_payload(
 # ── Step 4: Call Claude ───────────────────────────────────────────────────────
 
 
-def _call_claude(payload: dict[str, Any]) -> str:
+def _call_claude(payload: dict[str, Any], *, retry_feedback: str | None = None) -> str:
     """Invoke Claude to generate narrative commentary.
 
     Uses runtime model discovery via ``src.select_models.select_models()``.
     Temperature 0.2, max_tokens 1500.
 
     Args:
-        payload: Structured JSON from Step 3 (all numbers pre-formatted).
+        payload:        Structured JSON from Step 3 (all numbers pre-formatted).
+        retry_feedback: If set, appended to the user message as corrective feedback
+                        from a prior guard violation. Used by the retry loop in
+                        ``generate()``.
 
     Returns:
         Raw markdown text from Claude.
@@ -356,6 +384,13 @@ def _call_claude(payload: dict[str, Any]) -> str:
         "Write the CFO-style variance commentary following the STRICT OUTPUT RULES.\n\n"
         f"```json\n{json.dumps(payload, indent=2, default=str)}\n```"
     )
+    if retry_feedback:
+        user_message += (
+            "\n\n## RETRY — your previous attempt violated the output rules:\n"
+            f"{retry_feedback}\n\n"
+            "Regenerate the commentary without that violation. "
+            "Re-read RULES 4-6 before producing output."
+        )
 
     client = anthropic.Anthropic()
     response = client.messages.create(
@@ -593,21 +628,26 @@ def generate(
     *,
     dry_run: bool = True,
     verify_only: Path | None = None,
+    max_guard_retries: int = 1,
 ) -> Path | None:
     """Run the full 5-step commentary pipeline.
 
     Args:
-        ticker:      Ticker symbol override; falls back to config/company.yaml.
-        db_path:     Path to DuckDB file; auto-derived from ticker if omitted.
-        dry_run:     If True, print the prompt without calling the API (default).
-        verify_only: If given, skip Steps 1-4 and re-run the guard on this file.
+        ticker:            Ticker symbol override; falls back to config/company.yaml.
+        db_path:           Path to DuckDB file; auto-derived from ticker if omitted.
+        dry_run:           If True, print the prompt without calling the API (default).
+        verify_only:       If given, skip Steps 1-4 and re-run the guard on this file.
+        max_guard_retries: How many times to re-call Claude with corrective feedback
+                           after a guard violation. Default 1 (one retry, two total
+                           attempts). Set to 0 to disable retries.
 
     Returns:
         Path to the saved commentary file, or None in dry-run mode.
 
     Raises:
         RefusalError:       If data-integrity conditions are violated.
-        HallucinationError: If the guard fires on Claude's output.
+        HallucinationError: If the guard fires on Claude's output and all retries
+                            are exhausted.
         FileNotFoundError:  If required files are missing.
     """
     # Load config
@@ -664,14 +704,44 @@ def generate(
         print("(Pass --live to call the Anthropic API)")
         return None
 
-    # Step 4: Call Claude
-    logger.info("Step 4: Calling Claude for narrative generation")
-    commentary_text = _call_claude(payload)
+    # Steps 4 + 5 with bounded retry: on a guard violation we re-call Claude with
+    # corrective feedback rather than failing the run outright. The guard's
+    # error message is itself a structured signal — feeding it back in gives
+    # the model exactly the constraint it needs to fix.
+    retry_feedback: str | None = None
+    last_error: HallucinationError | None = None
+    commentary_text: str | None = None
 
-    # Step 5: Hallucination guard
-    logger.info("Step 5: Running hallucination guard")
-    run_hallucination_guard(commentary_text, payload)
-    logger.info("Guard passed — all numeric tokens validated")
+    for attempt in range(max_guard_retries + 1):
+        logger.info(
+            "Step 4: Calling Claude for narrative generation (attempt %d/%d)",
+            attempt + 1,
+            max_guard_retries + 1,
+        )
+        commentary_text = _call_claude(payload, retry_feedback=retry_feedback)
+
+        logger.info("Step 5: Running hallucination guard")
+        try:
+            run_hallucination_guard(commentary_text, payload)
+            logger.info("Guard passed — all numeric tokens validated")
+            break
+        except HallucinationError as exc:
+            last_error = exc
+            retry_feedback = str(exc)
+            if attempt < max_guard_retries:
+                logger.warning(
+                    "Guard fired on attempt %d (%s); retrying with corrective feedback.",
+                    attempt + 1,
+                    exc,
+                )
+            else:
+                logger.error("Guard fired on final attempt; surfacing error.")
+                raise
+
+    # Defensive: only reachable if the loop body never assigned commentary_text,
+    # which can't happen given max_guard_retries >= 0.
+    if commentary_text is None:  # pragma: no cover
+        raise RuntimeError(f"No commentary produced; last error: {last_error}")
 
     # Step 6: Save
     out_path = _save_commentary(resolved_ticker, commentary_text)

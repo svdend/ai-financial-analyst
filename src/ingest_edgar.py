@@ -38,7 +38,10 @@ logger = logging.getLogger(__name__)
 _EDGAR_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 _REQUEST_TIMEOUT_SECONDS = 30
 _DEFAULT_YEARS = 5
-_DEFAULT_USER_AGENT = "ai-financial-analyst-portfolio/1.0 contact@example.com"
+
+# Placeholder shipped in .env.example; if SEC sees this address it returns 403
+# (and rightly so). The user-agent helper rejects it explicitly.
+_PLACEHOLDER_USER_AGENT = "ai-financial-analyst-portfolio/1.0 contact@example.com"
 
 # Fiscal periods to retain.  Annual (FY) plus four standard quarters.
 _VALID_FP: frozenset[str] = frozenset({"FY", "Q1", "Q2", "Q3", "Q4"})
@@ -153,11 +156,22 @@ def _period_type(fp: str) -> str:
 def _user_agent() -> str:
     """Return SEC ``User-Agent`` header value.
 
-    Reads ``SEC_USER_AGENT`` from the environment; falls back to the
-    module-level placeholder.  SEC policy requires an email address in the
-    User-Agent.
+    SEC fair-use policy requires a real contact email in the User-Agent header.
+    Submissions with the placeholder address are rejected with 403, so we
+    refuse to send the request at all rather than producing a confusing failure.
+
+    Raises:
+        RuntimeError: if SEC_USER_AGENT is unset or still equal to the
+            placeholder shipped in ``.env.example``.
     """
-    return os.environ.get("SEC_USER_AGENT", _DEFAULT_USER_AGENT)
+    ua = os.environ.get("SEC_USER_AGENT", "").strip()
+    if not ua or ua == _PLACEHOLDER_USER_AGENT:
+        raise RuntimeError(
+            "SEC_USER_AGENT is not set (or still set to the .env.example placeholder). "
+            "SEC fair-use policy requires a real contact email — see .env.example for "
+            "the recommended GitHub noreply form."
+        )
+    return ua
 
 
 def fetch_company_facts(cik: str) -> dict[str, Any]:

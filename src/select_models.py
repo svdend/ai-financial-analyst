@@ -74,27 +74,28 @@ def select_models() -> dict[str, str]:
     Calls ``/v1/models`` to enumerate models available to the current API
     key, then applies the family/generation policy from
     ``/config/model_selection.yaml``.  Falls back to that file's documented
-    snapshot IDs on any exception.
+    snapshot IDs only on *network or API* failures — policy-parsing errors
+    propagate so real bugs aren't silently masked.
 
-    The result is cached for the lifetime of the current process.
+    The result is cached for the lifetime of the current process. Tests that
+    need a fresh resolution should call ``select_models.cache_clear()``.
 
     Returns:
         Dict with ``"planner"`` and ``"narrator"`` keys, each a valid
         Anthropic snapshot-ID string.
     """
+    # Policy parsing failures (missing keys, bad YAML) are real bugs — let them raise.
     with _CONFIG_PATH.open() as fh:
         policy: dict[str, Any] = yaml.safe_load(fh)
-
     fallback: dict[str, str] = policy["fallback"]
+    planner_families: list[str] = policy["selection"]["planner"]["prefer_family"]
+    narrator_families: list[str] = policy["selection"]["narrator"]["prefer_family"]
 
     try:
         client = anthropic.Anthropic()
         # client.models.list() returns a paginated SyncPage; list() exhausts it.
         all_models: list[Any] = list(client.models.list())
         model_ids: list[str] = [m.id for m in all_models if isinstance(getattr(m, "id", None), str)]
-
-        planner_families: list[str] = policy["selection"]["planner"]["prefer_family"]
-        narrator_families: list[str] = policy["selection"]["narrator"]["prefer_family"]
 
         planner = _best_match(model_ids, planner_families)
         narrator = _best_match(model_ids, narrator_families)
@@ -111,7 +112,8 @@ def select_models() -> dict[str, str]:
             narrator,
         )
 
-    except Exception as exc:  # noqa: BLE001 — any failure falls through to fallback
+    except anthropic.AnthropicError as exc:
+        # Network, auth, rate-limit, or any other SDK-surface failure → fallback.
         logger.warning("Model discovery failed (%s); using policy fallback IDs.", exc)
 
     result = {"planner": fallback["planner"], "narrator": fallback["narrator"]}

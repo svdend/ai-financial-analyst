@@ -27,6 +27,8 @@ _VALID_VARIANCE_ROW = {
 
 _CLEAN_QUALITY_ROW = {
     "has_restatement": False,
+    "has_going_concern_doubt": False,
+    "has_material_weakness": False,
     "missing_quarters": None,
     "has_physical_inventory": True,
 }
@@ -61,6 +63,20 @@ def test_refusal_on_restatement_true_does_not_call_api(monkeypatch: pytest.Monke
 
 
 # ── Missing-quarters refusal ──────────────────────────────────────────────────
+
+
+def test_refusal_on_going_concern_doubt() -> None:
+    """has_going_concern_doubt=TRUE → pipeline refuses with RefusalError."""
+    quality = {**_CLEAN_QUALITY_ROW, "has_going_concern_doubt": True}
+    with pytest.raises(RefusalError, match="going-concern"):
+        _check_refusals(_VALID_VARIANCE_ROW, quality)
+
+
+def test_refusal_on_material_weakness() -> None:
+    """has_material_weakness=TRUE → pipeline refuses with RefusalError."""
+    quality = {**_CLEAN_QUALITY_ROW, "has_material_weakness": True}
+    with pytest.raises(RefusalError, match="material weakness"):
+        _check_refusals(_VALID_VARIANCE_ROW, quality)
 
 
 def test_refusal_on_missing_quarters() -> None:

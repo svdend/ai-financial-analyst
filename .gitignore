@@ -39,3 +39,11 @@ coverage.xml
 
 # secrets scan baseline (track, not ignore)
 # .secrets.baseline is committed intentionally
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+
+# Runtime logs (Tableau hyperd, etc.)
+*.log

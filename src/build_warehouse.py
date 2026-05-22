@@ -357,7 +357,11 @@ SELECT
     (SELECT MAX(fiscal_year)         FROM raw_financials)                              AS max_fiscal_year,
     (SELECT COUNT(*) > 0 FROM raw_financials
      WHERE line_item = 'Inventory' AND value IS NOT NULL)                              AS has_physical_inventory,
-    (SELECT COUNT(*) > 0 FROM v_restatement_details)                                  AS has_restatement
+    (SELECT COUNT(*) > 0 FROM v_restatement_details)                                  AS has_restatement,
+    (SELECT COUNT(*) > 0 FROM raw_financials
+     WHERE line_item = 'GoingConcernDoubt' AND value IS NOT NULL)                      AS has_going_concern_doubt,
+    (SELECT COUNT(*) > 0 FROM raw_financials
+     WHERE line_item = 'MaterialWeakness' AND value IS NOT NULL)                       AS has_material_weakness
 """
 
 # Ordered list of all views to create — order matters (dependencies first).

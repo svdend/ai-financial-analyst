@@ -183,7 +183,11 @@ Model selection happens at runtime via `/v1/models` — no hardcoded snapshot ID
 
 ## Eval Harness
 
-Five ground-truth variance scenarios in `tests/eval/fixtures/`:
+Five ground-truth variance scenarios in `tests/eval/fixtures/`. The harness exercises
+the **mechanical-driver detection logic and the hallucination-guard plumbing** end to
+end — Claude itself is *not* called from CI. Each scenario builds a synthetic
+commentary string that exercises the relevant guard rule and asserts the expected
+refusal/driver outcome.
 
 | Scenario | Expected outcome |
 |---|---|
@@ -196,6 +200,11 @@ Five ground-truth variance scenarios in `tests/eval/fixtures/`:
 Drivers are restricted to mechanical decompositions computable from input data.
 Causal narratives ("Cortex platform momentum") are not tested because rewarding
 the model for emitting them contradicts the anti-speculation rules in Prompt 8.
+
+> **Limitation:** the harness validates the deterministic plumbing (refusal logic,
+> driver classification, guard rules), not real LLM output. Live model evaluation —
+> running the actual narrator and grading its commentary against the fixtures — is
+> v2 work. See `docs/MODELING_DECISIONS.md` §7.
 
 ---
 
