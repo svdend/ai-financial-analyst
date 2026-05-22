@@ -318,6 +318,15 @@ def _build_payload(
         "fcf_actual": _entry(_fmt_dollars(variance_row.get("fcf_actual"))),
         "fcf_yoy": _entry(_fmt_dollars(variance_row.get("fcf_yoy"))),
         "fcf_yoy_growth_pct": _entry(_fmt_pct(variance_row.get("fcf_yoy_growth_pct"))),
+        # Billings (derived: revenue + Δ deferred revenue)
+        "billings_actual": _entry(_fmt_dollars(variance_row.get("billings_actual"))),
+        "billings_yoy": _entry(_fmt_dollars(variance_row.get("billings_yoy"))),
+        "billings_yoy_growth_pct": _entry(_fmt_pct(variance_row.get("billings_yoy_growth_pct"))),
+        "billings_provenance": (
+            "derived from revenue + Δ(deferred revenue); "
+            "deferred revenue sourced from ContractWithCustomerLiabilityCurrent "
+            "(or DeferredRevenueCurrent) — current portion only"
+        ),
         # Data quality context
         "has_restatement": bool(quality_row.get("has_restatement", False)),
         "has_physical_inventory": bool(quality_row.get("has_physical_inventory", False)),

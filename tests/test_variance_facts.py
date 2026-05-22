@@ -46,6 +46,9 @@ _REQUIRED_COLUMNS = {
     "fcf_yoy",
     "fcf_yoy_delta",
     "fcf_yoy_growth_pct",
+    "billings_actual",
+    "billings_yoy",
+    "billings_yoy_growth_pct",
     "revenue_actual_fact_id",
     "revenue_actual_accession",
     "revenue_prior_forecast_model",
@@ -104,6 +107,155 @@ def _write_forecast_parquet(models_dir: Path, ticker: str, period_end: str) -> N
         }
     )
     df.to_parquet(models_dir / f"{ticker}_baseline_forecasts.parquet", index=False)
+
+
+def _build_db_from_dict(facts: dict[str, Any], ticker: str, cik_int: int, tmp_path: Path) -> Path:
+    """Ingest an in-memory facts dict → parquet → DuckDB; return .duckdb path.
+
+    Used by tests that build fixtures programmatically (e.g. for billings,
+    where the on-disk fixtures lack DeferredRevenue entries).
+    """
+    config: dict[str, Any] = {
+        "cik": str(cik_int).zfill(10),
+        "cik_int": cik_int,
+        "ticker": ticker,
+        "name": f"Test {ticker}",
+        "fiscal_year_end_month": 7,
+        "sector_etf": "XLK",
+    }
+    config_path = tmp_path / "company.yaml"
+    with config_path.open("w") as fh:
+        yaml.dump(config, fh)
+
+    with (
+        patch("src.ingest_edgar._CONFIG_PATH", config_path),
+        patch("src.ingest_edgar._DATA_DIR", tmp_path),
+    ):
+        ingest(ticker=ticker, years=10, facts_json=facts)
+
+    with (
+        patch("src.build_warehouse._CONFIG_PATH", config_path),
+        patch("src.build_warehouse._PROCESSED_DIR", tmp_path),
+    ):
+        return build_warehouse(ticker=ticker)
+
+
+def _synthetic_billings_facts() -> dict[str, Any]:
+    """Construct a minimal companyfacts dict with two consecutive quarters.
+
+    Designed so billings = revenue + ΔDR is exactly known:
+
+    * 2024-04-30 (FY24 Q3): Revenue=$1,000M, DR=$2,000M
+    * 2024-07-31 (FY24 Q4): Revenue=$1,200M, DR=$2,300M
+        → billings_actual = 1,200M + (2,300M - 2,000M) = 1,500M
+
+    Includes a YoY pair (FY23 Q3 / Q4 FY23 Q2) so the YoY columns are also
+    computable but the focus of the test is the actual-quarter math.
+    """
+    return {
+        "cik": 9999999,
+        "entityType": "operating",
+        "facts": {
+            "us-gaap": {
+                "RevenueFromContractWithCustomerExcludingAssessedTax": {
+                    "label": "Revenue",
+                    "units": {
+                        "USD": [
+                            # Prior-year pair (FY23) — for YoY billings
+                            {
+                                "end": "2023-04-30",
+                                "val": 800_000_000,
+                                "accn": "0009999999-23-000020",
+                                "fy": 2023,
+                                "fp": "Q3",
+                                "form": "10-Q",
+                                "filed": "2023-05-19",
+                                "frame": "CY2023Q2",
+                            },
+                            {
+                                "end": "2023-07-31",
+                                "val": 900_000_000,
+                                "accn": "0009999999-23-000030",
+                                "fy": 2023,
+                                "fp": "Q4",
+                                "form": "10-K",
+                                "filed": "2023-09-08",
+                                "frame": "",
+                            },
+                            # Current-year pair (FY24)
+                            {
+                                "end": "2024-04-30",
+                                "val": 1_000_000_000,
+                                "accn": "0009999999-24-000020",
+                                "fy": 2024,
+                                "fp": "Q3",
+                                "form": "10-Q",
+                                "filed": "2024-06-05",
+                                "frame": "CY2024Q2",
+                            },
+                            {
+                                "end": "2024-07-31",
+                                "val": 1_200_000_000,
+                                "accn": "0009999999-24-000030",
+                                "fy": 2024,
+                                "fp": "Q4",
+                                "form": "10-K",
+                                "filed": "2024-09-09",
+                                "frame": "",
+                            },
+                        ]
+                    },
+                },
+                "ContractWithCustomerLiabilityCurrent": {
+                    "label": "Deferred Revenue (current)",
+                    "units": {
+                        "USD": [
+                            {
+                                "end": "2023-04-30",
+                                "val": 1_500_000_000,
+                                "accn": "0009999999-23-000020",
+                                "fy": 2023,
+                                "fp": "Q3",
+                                "form": "10-Q",
+                                "filed": "2023-05-19",
+                                "frame": "CY2023Q2I",
+                            },
+                            {
+                                "end": "2023-07-31",
+                                "val": 1_700_000_000,
+                                "accn": "0009999999-23-000030",
+                                "fy": 2023,
+                                "fp": "Q4",
+                                "form": "10-K",
+                                "filed": "2023-09-08",
+                                "frame": "CY2023Q3I",
+                            },
+                            {
+                                "end": "2024-04-30",
+                                "val": 2_000_000_000,
+                                "accn": "0009999999-24-000020",
+                                "fy": 2024,
+                                "fp": "Q3",
+                                "form": "10-Q",
+                                "filed": "2024-06-05",
+                                "frame": "CY2024Q2I",
+                            },
+                            {
+                                "end": "2024-07-31",
+                                "val": 2_300_000_000,
+                                "accn": "0009999999-24-000030",
+                                "fy": 2024,
+                                "fp": "Q4",
+                                "form": "10-K",
+                                "filed": "2024-09-09",
+                                "frame": "CY2024Q3I",
+                            },
+                        ]
+                    },
+                },
+            }
+        },
+    }
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
@@ -261,3 +413,75 @@ def test_consensus_null_when_no_csv(tmp_path: Path) -> None:
     assert pd.isna(
         df["revenue_consensus"].iloc[0]
     ), "revenue_consensus should be NULL when no consensus CSV exists"
+
+
+# ── Billings (derived) ─────────────────────────────────────────────────────────
+
+
+def test_billings_actual_equals_revenue_plus_delta_dr(tmp_path: Path) -> None:
+    """billings_actual = revenue + Δ(DeferredRevenue) within $0.01.
+
+    Synthetic two-quarter fixture (FY24 Q3 → FY24 Q4):
+        revenue_q4 = $1,200M
+        DR_q4     = $2,300M
+        DR_q3     = $2,000M
+        ΔDR       = +$300M
+        ⇒ billings = $1,500M
+    """
+    db_path = _build_db_from_dict(_synthetic_billings_facts(), "TEST", 9999999, tmp_path)
+    build(ticker="TEST", db_path=db_path)
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = con.execute("SELECT revenue_actual, billings_actual FROM v_variance_facts").fetchdf()
+    finally:
+        con.close()
+
+    assert len(df) == 1
+    revenue = float(df["revenue_actual"].iloc[0])
+    billings = float(df["billings_actual"].iloc[0])
+    expected = 1_200_000_000.0 + (2_300_000_000.0 - 2_000_000_000.0)
+    assert revenue == 1_200_000_000.0
+    assert (
+        abs(billings - expected) < 0.01
+    ), f"billings_actual mismatch: expected {expected:.0f}, got {billings:.0f}"
+
+
+def test_billings_yoy_equals_yoy_revenue_plus_delta_dr(tmp_path: Path) -> None:
+    """billings_yoy = revenue_yoy + Δ(DR over the YoY pair) within $0.01.
+
+    YoY quarter is FY23 Q4 (period_end 2023-07-31).
+    The "prior" balance-sheet date for the YoY computation is the most-recent
+    period_end strictly before 2023-07-31 — i.e. 2023-04-30 in this fixture.
+        revenue_yoy = $900M
+        DR_yoy     = $1,700M  (2023-07-31)
+        DR_yoy-1   = $1,500M  (2023-04-30)
+        ⇒ billings_yoy = 900M + 200M = $1,100M
+    """
+    db_path = _build_db_from_dict(_synthetic_billings_facts(), "TEST", 9999999, tmp_path)
+    build(ticker="TEST", db_path=db_path)
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = con.execute(
+            "SELECT revenue_yoy, billings_yoy, billings_yoy_growth_pct FROM v_variance_facts"
+        ).fetchdf()
+    finally:
+        con.close()
+
+    assert len(df) == 1
+    revenue_yoy = float(df["revenue_yoy"].iloc[0])
+    billings_yoy = float(df["billings_yoy"].iloc[0])
+    growth = float(df["billings_yoy_growth_pct"].iloc[0])
+
+    expected_yoy = 900_000_000.0 + (1_700_000_000.0 - 1_500_000_000.0)
+    assert revenue_yoy == 900_000_000.0
+    assert (
+        abs(billings_yoy - expected_yoy) < 0.01
+    ), f"billings_yoy mismatch: expected {expected_yoy:.0f}, got {billings_yoy:.0f}"
+
+    # billings_actual = 1,500M; billings_yoy = 1,100M; growth = (1500-1100)/1100
+    expected_growth = (1_500_000_000.0 - expected_yoy) / expected_yoy
+    assert (
+        abs(growth - expected_growth) < 1e-9
+    ), f"billings_yoy_growth_pct mismatch: expected {expected_growth}, got {growth}"

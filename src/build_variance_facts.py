@@ -11,8 +11,17 @@ quarter:
 * Actual revenue vs prior year (YoY)
 * Actual revenue vs analyst consensus (NULL when no consensus)
 * Same triple for gross_margin_pct, operating_margin_pct, free_cash_flow
+* Derived billings (``revenue + ΔDeferredRevenue``) and YoY billings growth
 
 All arithmetic happens in SQL/Python — Claude never receives raw inputs.
+
+Billings is a derived metric: there is no XBRL concept for it. We compute
+``billings = revenue + (DeferredRevenue_t - DeferredRevenue_{t-1})`` as the
+closest filings-traceable proxy for SaaS sales activity. The DeferredRevenue
+column in the warehouse is sourced from ``ContractWithCustomerLiabilityCurrent``
+(or ``DeferredRevenueCurrent``) — i.e. the current portion only. The
+``billings_provenance`` field in the commentary payload documents this so
+Claude can reference it.
 
 Provenance columns:
 * ``revenue_actual_fact_id``, ``revenue_actual_accession`` — trace actual to filing
@@ -103,6 +112,68 @@ yoy_cf AS (
       AND cf.fiscal_period = l.fiscal_period
 ),
 
+-- Balance-sheet snapshots collapsed to one row per period_end. DeferredRevenue
+-- is an instantaneous balance and identical across period_type rows for the
+-- same date; MAX() coalesces 10-K / 10-Q duplicates without altering the value.
+bs_by_date AS (
+    SELECT
+        period_end,
+        MAX(DeferredRevenue) AS DeferredRevenue
+    FROM v_balance_sheet_quarterly
+    WHERE DeferredRevenue IS NOT NULL
+    GROUP BY period_end
+),
+
+-- DR at the latest quarter end
+latest_bs AS (
+    SELECT bs.DeferredRevenue AS deferred_revenue_actual
+    FROM bs_by_date bs, latest_q l
+    WHERE CAST(bs.period_end AS DATE) = CAST(l.period_end AS DATE)
+),
+
+-- DR at the immediately previous balance-sheet date (any prior period_end)
+prior_bs AS (
+    SELECT bs.DeferredRevenue AS deferred_revenue_prior
+    FROM bs_by_date bs, latest_q l
+    WHERE CAST(bs.period_end AS DATE) = (
+        SELECT MAX(CAST(b2.period_end AS DATE))
+        FROM bs_by_date b2, latest_q l2
+        WHERE CAST(b2.period_end AS DATE) < CAST(l2.period_end AS DATE)
+    )
+),
+
+-- DR at the YoY quarter end
+yoy_bs AS (
+    SELECT bs.DeferredRevenue AS deferred_revenue_yoy
+    FROM bs_by_date bs
+    WHERE CAST(bs.period_end AS DATE) = (
+        SELECT CAST(i.period_end AS DATE)
+        FROM v_income_statement_quarterly i, latest_q l
+        WHERE i.period_type = 'Q'
+          AND i.fiscal_year   = l.fiscal_year - 1
+          AND i.fiscal_period = l.fiscal_period
+        LIMIT 1
+    )
+),
+
+-- DR one quarter before the YoY quarter end
+yoy_prior_bs AS (
+    SELECT bs.DeferredRevenue AS deferred_revenue_yoy_prior
+    FROM bs_by_date bs
+    WHERE CAST(bs.period_end AS DATE) = (
+        SELECT MAX(CAST(b2.period_end AS DATE))
+        FROM bs_by_date b2
+        WHERE CAST(b2.period_end AS DATE) < (
+            SELECT CAST(i.period_end AS DATE)
+            FROM v_income_statement_quarterly i, latest_q l
+            WHERE i.period_type = 'Q'
+              AND i.fiscal_year   = l.fiscal_year - 1
+              AND i.fiscal_period = l.fiscal_period
+            LIMIT 1
+        )
+    )
+),
+
 -- Forecast medians loaded from parquet files
 -- (parquet paths are substituted at view creation time)
 forecast_med AS (
@@ -169,6 +240,24 @@ SELECT
         / NULLIF(ABS(yoy_cf.fcf_yoy), 0)
                                    AS fcf_yoy_growth_pct,
 
+    -- Billings: revenue + Δ(DeferredRevenue). Derived; not an XBRL concept.
+    l.revenue_actual
+        + (lbs.deferred_revenue_actual - pbs.deferred_revenue_prior)
+                                   AS billings_actual,
+    yoy_q.revenue_yoy
+        + (ybs.deferred_revenue_yoy - ypbs.deferred_revenue_yoy_prior)
+                                   AS billings_yoy,
+    (
+        (l.revenue_actual
+            + (lbs.deferred_revenue_actual - pbs.deferred_revenue_prior))
+        - (yoy_q.revenue_yoy
+            + (ybs.deferred_revenue_yoy - ypbs.deferred_revenue_yoy_prior))
+    ) / NULLIF(
+        ABS(yoy_q.revenue_yoy
+            + (ybs.deferred_revenue_yoy - ypbs.deferred_revenue_yoy_prior)),
+        0
+    )                              AS billings_yoy_growth_pct,
+
     -- Provenance
     l.revenue_actual_fact_id,
     l.revenue_actual_accession,
@@ -182,6 +271,10 @@ LEFT JOIN yoy_q    ON 1 = 1
 LEFT JOIN latest_cf cf ON 1 = 1
 LEFT JOIN yoy_cf   ON 1 = 1
 LEFT JOIN forecast_med fm ON 1 = 1
+LEFT JOIN latest_bs lbs ON 1 = 1
+LEFT JOIN prior_bs pbs  ON 1 = 1
+LEFT JOIN yoy_bs ybs    ON 1 = 1
+LEFT JOIN yoy_prior_bs ypbs ON 1 = 1
 """
 
 # Simpler version used when no forecast parquets are found
@@ -228,6 +321,62 @@ yoy_cf AS (
     WHERE cf.period_type   = 'Q'
       AND cf.fiscal_year   = l.fiscal_year - 1
       AND cf.fiscal_period = l.fiscal_period
+),
+
+-- See main template for commentary; replicated here for the no-forecast path.
+bs_by_date AS (
+    SELECT
+        period_end,
+        MAX(DeferredRevenue) AS DeferredRevenue
+    FROM v_balance_sheet_quarterly
+    WHERE DeferredRevenue IS NOT NULL
+    GROUP BY period_end
+),
+
+latest_bs AS (
+    SELECT bs.DeferredRevenue AS deferred_revenue_actual
+    FROM bs_by_date bs, latest_q l
+    WHERE CAST(bs.period_end AS DATE) = CAST(l.period_end AS DATE)
+),
+
+prior_bs AS (
+    SELECT bs.DeferredRevenue AS deferred_revenue_prior
+    FROM bs_by_date bs
+    WHERE CAST(bs.period_end AS DATE) = (
+        SELECT MAX(CAST(b2.period_end AS DATE))
+        FROM bs_by_date b2, latest_q l2
+        WHERE CAST(b2.period_end AS DATE) < CAST(l2.period_end AS DATE)
+    )
+),
+
+yoy_bs AS (
+    SELECT bs.DeferredRevenue AS deferred_revenue_yoy
+    FROM bs_by_date bs
+    WHERE CAST(bs.period_end AS DATE) = (
+        SELECT CAST(i.period_end AS DATE)
+        FROM v_income_statement_quarterly i, latest_q l
+        WHERE i.period_type = 'Q'
+          AND i.fiscal_year   = l.fiscal_year - 1
+          AND i.fiscal_period = l.fiscal_period
+        LIMIT 1
+    )
+),
+
+yoy_prior_bs AS (
+    SELECT bs.DeferredRevenue AS deferred_revenue_yoy_prior
+    FROM bs_by_date bs
+    WHERE CAST(bs.period_end AS DATE) = (
+        SELECT MAX(CAST(b2.period_end AS DATE))
+        FROM bs_by_date b2
+        WHERE CAST(b2.period_end AS DATE) < (
+            SELECT CAST(i.period_end AS DATE)
+            FROM v_income_statement_quarterly i, latest_q l
+            WHERE i.period_type = 'Q'
+              AND i.fiscal_year   = l.fiscal_year - 1
+              AND i.fiscal_period = l.fiscal_period
+            LIMIT 1
+        )
+    )
 )
 
 SELECT
@@ -262,6 +411,23 @@ SELECT
     cf.fcf_actual - yoy_cf.fcf_yoy AS fcf_yoy_delta,
     (cf.fcf_actual - yoy_cf.fcf_yoy)
         / NULLIF(ABS(yoy_cf.fcf_yoy), 0) AS fcf_yoy_growth_pct,
+    -- Billings: revenue + Δ(DeferredRevenue). Derived; not an XBRL concept.
+    l.revenue_actual
+        + (lbs.deferred_revenue_actual - pbs.deferred_revenue_prior)
+                                  AS billings_actual,
+    yoy_q.revenue_yoy
+        + (ybs.deferred_revenue_yoy - ypbs.deferred_revenue_yoy_prior)
+                                  AS billings_yoy,
+    (
+        (l.revenue_actual
+            + (lbs.deferred_revenue_actual - pbs.deferred_revenue_prior))
+        - (yoy_q.revenue_yoy
+            + (ybs.deferred_revenue_yoy - ypbs.deferred_revenue_yoy_prior))
+    ) / NULLIF(
+        ABS(yoy_q.revenue_yoy
+            + (ybs.deferred_revenue_yoy - ypbs.deferred_revenue_yoy_prior)),
+        0
+    )                             AS billings_yoy_growth_pct,
     l.revenue_actual_fact_id,
     l.revenue_actual_accession,
     l.revenue_actual_filing_url,
@@ -272,6 +438,10 @@ FROM latest_q l
 LEFT JOIN yoy_q    ON 1 = 1
 LEFT JOIN latest_cf cf ON 1 = 1
 LEFT JOIN yoy_cf      ON 1 = 1
+LEFT JOIN latest_bs lbs ON 1 = 1
+LEFT JOIN prior_bs pbs  ON 1 = 1
+LEFT JOIN yoy_bs ybs    ON 1 = 1
+LEFT JOIN yoy_prior_bs ypbs ON 1 = 1
 """
 
 
