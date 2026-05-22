@@ -59,9 +59,7 @@ def _fake_pull(_db_path: Path) -> tuple[dict, dict]:  # type: ignore[type-arg]
     return variance_row, quality_row
 
 
-_BAD_COMMENTARY_BILLION = (
-    f"Revenue of $2.3 billion [{_VALID_ACCESSION}] grew 15.0%."
-)
+_BAD_COMMENTARY_BILLION = f"Revenue of $2.3 billion [{_VALID_ACCESSION}] grew 15.0%."
 _GOOD_COMMENTARY = f"Revenue of $2.3B [{_VALID_ACCESSION}] grew 15.0%."
 
 
@@ -92,9 +90,9 @@ def test_guard_retry_recovers_on_second_attempt(_pipeline_patches: None) -> None
     assert result is not None
     assert len(call_log) == 2, f"expected 2 calls, got {len(call_log)}"
     assert call_log[0] == "<initial>"
-    assert "billion" in call_log[1], (
-        "Retry should pass the violation message back as corrective feedback."
-    )
+    assert (
+        "billion" in call_log[1]
+    ), "Retry should pass the violation message back as corrective feedback."
 
 
 def test_guard_retry_disabled_propagates_first_violation(_pipeline_patches: None) -> None:

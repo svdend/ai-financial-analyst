@@ -150,6 +150,6 @@ def test_cash_is_the_balancing_item() -> None:
 
     for q, p in enumerate(periods, start=1):
         expected_end = p["BegCash"] + p["OCF"] + p["InvestingCF"] + p["FinancingCF"]
-        assert abs(p["EndCash"] - expected_end) < 0.01, (
-            f"q{q}: EndCash {p['EndCash']:.2f} != BegCash + ΔCF {expected_end:.2f}"
-        )
+        assert (
+            abs(p["EndCash"] - expected_end) < 0.01
+        ), f"q{q}: EndCash {p['EndCash']:.2f} != BegCash + ΔCF {expected_end:.2f}"
