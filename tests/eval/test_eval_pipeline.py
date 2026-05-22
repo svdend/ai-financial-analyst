@@ -1,8 +1,8 @@
 """Eval harness: 5 ground-truth variance scenarios.
 
 Tests mechanical driver detection and refusal logic without calling the
-Anthropic API. Follows Kepler Finance's anti-speculation principle: drivers
-are restricted to four mechanical decompositions computable from input data.
+Anthropic API. Anti-speculation principle: drivers are restricted to four
+mechanical decompositions computable from input data.
 
 Scenarios:
   1. VOLUME-driven   — revenue up 8% YoY, gross margin flat → driver = "volume"

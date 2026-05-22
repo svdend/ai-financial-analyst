@@ -1,1 +1,1 @@
-"""End-to-end eval harness (Kepler-style mechanical-driver fixtures)."""
+"""End-to-end eval harness (mechanical-driver fixtures)."""

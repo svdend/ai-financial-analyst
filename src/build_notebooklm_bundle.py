@@ -508,7 +508,7 @@ def _build_notebooklm_readme(ticker: str) -> str:
 | 09_eval_report.md | Eval harness pass/fail (5 ground-truth scenarios) |
 
 ## Architecture note
-This pipeline follows the Kepler Finance reasoning-vs-computation pattern:
+This pipeline follows the reasoning-vs-computation pattern:
 all arithmetic happens in Python/SQL, Claude generates narrative only. Every
 number in the commentary traces to an SEC accession number.
 """

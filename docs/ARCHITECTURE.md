@@ -37,7 +37,7 @@ src/ingest_edgar.py ────────────────────
                     │
                     ▼
          src/generate_commentary.py ──► dashboard/{TICKER}_exec_commentary_{DATE}.md
-          [Kepler reasoning-vs-computation split]
+          [reasoning-vs-computation split]
           [hallucination guard]
           [refusal-on-restatement]
                     │
@@ -163,7 +163,7 @@ show "Source: 0001327567-26-000123 → [click to open filing]".
 
 ## Layer 6: Commentary (`src/generate_commentary.py`)
 
-Five-step Kepler pattern:
+Five-step reasoning-vs-computation pattern:
 
 1. **Pull** — query `v_variance_facts` and `v_data_quality` from DuckDB
 2. **Refuse** — `has_restatement=TRUE`, missing quarters, or null fiscal year → exit 1

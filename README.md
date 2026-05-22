@@ -22,10 +22,11 @@ This project automates the financial analyst workflow end-to-end:
    FRED macro features) with honest uncertainty quantification at small sample sizes
 4. **Excel model** — simplified three-statement model (Base/Bull/Bear scenarios)
    with a per-cell Sources sheet tracing every historical value to its filing
-5. **Dashboard** — Tableau Public dashboard with click-through to source filings
-6. **Commentary** — Claude-generated CFO-style variance commentary following
-   Kepler Finance's reasoning-vs-computation split (all arithmetic in Python;
-   Claude writes narrative only, with inline accession-level citations)
+5. **Dashboard** — Tableau-ready star-schema CSVs (and `.hyper` extract) with
+   click-through to source filings via the `dim_filing` dimension
+6. **Commentary** — Claude-generated CFO-style variance commentary using the
+   reasoning-vs-computation split (all arithmetic in Python; Claude writes
+   narrative only, with inline accession-level citations)
 7. **Eval harness** — 5 ground-truth variance scenarios including
    refusal-on-restatement, tested in CI
 
@@ -164,8 +165,8 @@ clickable link to the SEC filing.
 
 ## LLM Commentary
 
-`src/generate_commentary.py` follows the
-[Kepler Finance reasoning-vs-computation pattern](https://www.anthropic.com/):
+`src/generate_commentary.py` follows a reasoning-vs-computation split — a
+common production pattern for LLMs over numeric data:
 
 1. Python pulls pre-computed variances from DuckDB — Claude never sees raw data
 2. Refusal checks: restatement detected → exit non-zero, no API call

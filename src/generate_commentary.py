@@ -1,4 +1,4 @@
-"""Generate CFO-style variance commentary following the Kepler Finance pattern.
+"""Generate CFO-style variance commentary using the reasoning-vs-computation split.
 
 **Reasoning vs. computation split (architectural invariant)**
 All arithmetic happens in deterministic Python/SQL before Claude is called.
@@ -806,7 +806,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
 
     parser = argparse.ArgumentParser(
-        description="Generate CFO-style variance commentary (Kepler pattern).",
+        description="Generate CFO-style variance commentary (reasoning-vs-computation split).",
     )
     parser.add_argument("--ticker", default=None, help="Ticker symbol (e.g. PANW)")
     parser.add_argument(

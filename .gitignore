@@ -45,5 +45,8 @@ coverage.xml
 *.db
 .beads-credential-key
 
+# Local-only operator notes — keep on disk, never commit
+/docs/HOW_TO_DEMO.md
+
 # Runtime logs (Tableau hyperd, etc.)
 *.log

@@ -6,16 +6,16 @@ and the trade-offs considered. It is written for a technical interviewer who mig
 
 ---
 
-## 1. Why Kepler Finance's reasoning-vs-computation split?
+## 1. Why the reasoning-vs-computation split?
 
 **Decision:** All arithmetic happens in deterministic Python/SQL. Claude generates
 narrative only. Every number cited in the commentary must appear verbatim in the
 input JSON.
 
-**Rationale:** A common pattern in production financial LLM applications (sometimes
-called the "reasoning vs. computation split") is to do all arithmetic in deterministic
-code and let the model write narrative only. The motivation: *"in finance, the model
-can't be the whole system."* LLMs are unreliable calculators — they hallucinate numeric
+**Rationale:** A common pattern in production financial LLM applications — sometimes
+called the "reasoning vs. computation split" — is to do all arithmetic in deterministic
+code and let the model write narrative only. The motivation: in finance, the model
+can't be the whole system. LLMs are unreliable calculators — they hallucinate numeric
 outputs, particularly with large dollar amounts, percentage conversions, and YoY
 arithmetic. Pre-computing all variances in Python and feeding formatted strings (e.g.
 `"$1.2B"`, `"3.2%"`) to Claude eliminates the arithmetic failure mode entirely, leaving
