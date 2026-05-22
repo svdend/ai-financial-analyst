@@ -346,9 +346,9 @@ def _forecast_periods(
     tl_0 = _v(hist_bs, "TotalLiabilities")
     eq_0 = _v(hist_bs, "TotalEquity")
 
-    # PPE residual: TotalAssets − Cash − AR − Inv − OtherAssets residual
-    # We split into: {Cash, AR, Inv} explicitly modelled + OtherAssets held flat
-    other_assets = ta_0 - cash_0 - ar_0 - inv_0  # held flat
+    # PPE residual: TotalAssets − Cash − AR − Inv. Rolled forward each quarter by
+    # (capex − depreciation) so the accounting identity holds when capex ≠ dep.
+    other_assets = ta_0 - cash_0 - ar_0 - inv_0
     other_liab = tl_0 - ap_0 - dr_0  # held flat (debt=0 simplified)
     debt = 0.0
 
@@ -404,8 +404,12 @@ def _forecast_periods(
         cash_t = state["cash"] + net_change  # PLUG
         new_debt = max(0.0, state["debt"] - debt_amort)
 
+        # Roll PPE/other long-term assets: prior + capex − depreciation.
+        # This is what closes the accounting identity when capex ≠ dep.
+        other_assets_t = state["other_assets"] + capex_t - dep_rate
+
         # Balance check
-        ta_t = cash_t + ar_t + inv_t + state["other_assets"]
+        ta_t = cash_t + ar_t + inv_t + other_assets_t
         tl_t = ap_t + dr_t + new_debt + state["other_liab"]
         bc_t = ta_t - tl_t - eq_t
 
@@ -423,7 +427,7 @@ def _forecast_periods(
                 "Cash": cash_t,
                 "AccountsReceivable": ar_t,
                 "Inventory": inv_t,
-                "OtherAssets": state["other_assets"],
+                "OtherAssets": other_assets_t,
                 "TotalAssets": ta_t,
                 "AccountsPayable": ap_t,
                 "DeferredRevenue": dr_t,
@@ -451,7 +455,7 @@ def _forecast_periods(
             "cash": cash_t,
             "ar": ar_t,
             "inv": inv_t,
-            "other_assets": state["other_assets"],
+            "other_assets": other_assets_t,
             "ap": ap_t,
             "deferred_rev": dr_t,
             "other_liab": state["other_liab"],
