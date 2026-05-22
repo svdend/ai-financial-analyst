@@ -81,6 +81,9 @@ def _build_synthetic_warehouse(db_path: Path) -> None:
                     "AccountsReceivable": 600_000_000 + i * 20_000_000,
                     "ar_accession": f"acc-ar-{i}",
                     "ar_filing_url": f"https://example/ar-{i}",
+                    "TotalAssets": 10_000_000_000 + i * 200_000_000,
+                    "TotalLiabilities": 4_000_000_000 + i * 80_000_000,
+                    "TotalEquity": 6_000_000_000 + i * 120_000_000,
                 }
             )
         bs_df = pd.DataFrame(bs_rows)

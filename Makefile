@@ -2,6 +2,10 @@ TICKER  ?= PANW
 PYTHON  := .venv/bin/python
 PIP     := .venv/bin/pip
 
+# Load .env if present so API keys are available to all targets
+-include .env
+export
+
 .PHONY: setup ingest warehouse model forecast dashboard commentary \
         notebooklm test eval lint typecheck qa demo demo-quick clean
 

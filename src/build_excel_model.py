@@ -143,6 +143,9 @@ def _load_history(
             SELECT * FROM (
                 SELECT * FROM v_balance_sheet_quarterly
                 WHERE period_type = 'Q'
+                  AND TotalAssets IS NOT NULL
+                  AND TotalLiabilities IS NOT NULL
+                  AND TotalEquity IS NOT NULL
                 ORDER BY fiscal_year DESC, fiscal_period DESC
                 LIMIT {_N_HIST}
             ) ORDER BY fiscal_year, fiscal_period
