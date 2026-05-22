@@ -281,6 +281,29 @@ def _build_payload(
     fact_id = str(variance_row.get("revenue_actual_fact_id") or "")
     model_str = str(variance_row.get("revenue_prior_forecast_model") or "N/A")
 
+    # Provenance helpers ---------------------------------------------------
+    # Provenance strings name every input that flowed into a derived metric so
+    # downstream readers (Claude, auditors) can follow the math back to a
+    # specific fact_id. Missing source ids render as "<missing>" — never raise.
+    def _src(variance_key: str) -> str:
+        v = variance_row.get(variance_key)
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "<missing>"
+        s = str(v).strip()
+        return s if s else "<missing>"
+
+    rev_src = _src("revenue_actual_fact_id")
+    gp_src = _src("gross_profit_fact_id")
+    op_src = _src("op_income_fact_id")
+    # YoY income-statement fact_ids are not surfaced in v_variance_facts today
+    # (the SQL projects only the latest-quarter ids); record that explicitly.
+    rev_yoy_src = _src("revenue_yoy_fact_id")
+    gp_yoy_src = _src("gross_profit_yoy_fact_id")
+    op_yoy_src = _src("op_income_yoy_fact_id")
+    ocf_src = _src("ocf_actual_fact_id")
+    capex_src = _src("capex_actual_fact_id")
+    forecast_src = model_str if model_str and model_str != "N/A" else "<missing>"
+
     def _entry(
         fmt_val: str | None, *, fact_id_val: str = "", accession_val: str = ""
     ) -> dict[str, Any]:
@@ -305,31 +328,66 @@ def _build_payload(
         ),
         "revenue_yoy": _entry(_fmt_dollars(variance_row.get("revenue_yoy"))),
         "revenue_yoy_growth_pct": _entry(_fmt_pct(variance_row.get("revenue_yoy_growth_pct"))),
+        "revenue_yoy_growth_pct_provenance": (
+            f"derived: (revenue_actual - revenue_yoy) / revenue_yoy. "
+            f"Sources: {rev_src}, {rev_yoy_src}"
+        ),
         # Forecast comparison
         "revenue_prior_forecast": _entry(_fmt_dollars(variance_row.get("revenue_prior_forecast"))),
         "revenue_variance_vs_forecast": _entry(
             _fmt_dollars(variance_row.get("revenue_variance_vs_forecast"))
         ),
+        "revenue_variance_vs_forecast_provenance": (
+            f"derived: revenue_actual - revenue_prior_forecast. "
+            f"Sources: {rev_src}, forecast_model={forecast_src}"
+        ),
         "revenue_variance_pct_vs_forecast": _entry(
             _fmt_pct(variance_row.get("revenue_variance_pct_vs_forecast"))
+        ),
+        "revenue_variance_pct_vs_forecast_provenance": (
+            f"derived: (revenue_actual - revenue_prior_forecast) / revenue_prior_forecast. "
+            f"Sources: {rev_src}, forecast_model={forecast_src}"
         ),
         "revenue_prior_forecast_model": model_str,
         # Gross margin
         "gross_margin_pct_actual": _entry(_fmt_pct(variance_row.get("gross_margin_pct_actual"))),
+        "gross_margin_pct_actual_provenance": (
+            f"derived: gross_profit_actual / revenue_actual. Sources: {gp_src}, {rev_src}"
+        ),
         "gross_margin_pct_yoy": _entry(_fmt_pct(variance_row.get("gross_margin_pct_yoy"))),
+        "gross_margin_pct_yoy_provenance": (
+            f"derived: gross_profit_yoy / revenue_yoy. Sources: {gp_yoy_src}, {rev_yoy_src}"
+        ),
         "gross_margin_pct_yoy_delta": _entry(
             _fmt_pct(variance_row.get("gross_margin_pct_yoy_delta"))
+        ),
+        "gross_margin_pct_yoy_delta_provenance": (
+            f"derived: gross_margin_pct_actual - gross_margin_pct_yoy. "
+            f"Sources: {gp_src}, {rev_src}, {gp_yoy_src}, {rev_yoy_src}"
         ),
         # Operating margin
         "operating_margin_pct_actual": _entry(
             _fmt_pct(variance_row.get("operating_margin_pct_actual"))
         ),
+        "operating_margin_pct_actual_provenance": (
+            f"derived: operating_income_actual / revenue_actual. Sources: {op_src}, {rev_src}"
+        ),
         "operating_margin_pct_yoy": _entry(_fmt_pct(variance_row.get("operating_margin_pct_yoy"))),
+        "operating_margin_pct_yoy_provenance": (
+            f"derived: operating_income_yoy / revenue_yoy. Sources: {op_yoy_src}, {rev_yoy_src}"
+        ),
         "operating_margin_pct_yoy_delta": _entry(
             _fmt_pct(variance_row.get("operating_margin_pct_yoy_delta"))
         ),
+        "operating_margin_pct_yoy_delta_provenance": (
+            f"derived: operating_margin_pct_actual - operating_margin_pct_yoy. "
+            f"Sources: {op_src}, {rev_src}, {op_yoy_src}, {rev_yoy_src}"
+        ),
         # Free cash flow
         "fcf_actual": _entry(_fmt_dollars(variance_row.get("fcf_actual"))),
+        "free_cash_flow_provenance": (
+            f"derived: OperatingCashFlow - CapEx. Sources: {ocf_src}, {capex_src}"
+        ),
         "fcf_yoy": _entry(_fmt_dollars(variance_row.get("fcf_yoy"))),
         "fcf_yoy_growth_pct": _entry(_fmt_pct(variance_row.get("fcf_yoy_growth_pct"))),
         # Billings (derived: revenue + Δ deferred revenue)
