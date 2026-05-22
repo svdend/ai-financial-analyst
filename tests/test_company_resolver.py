@@ -118,6 +118,24 @@ def test_default_user_agent_no_personal_email() -> None:
         ), f"Default User-Agent contains '{domain}' — use a placeholder address."
 
 
+def test_user_agent_fails_fast_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_user_agent() must raise if SEC_USER_AGENT is unset (no silent fallback)."""
+    from src.company_resolver import _user_agent
+
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    with pytest.raises(RuntimeError, match="SEC_USER_AGENT"):
+        _user_agent()
+
+
+def test_user_agent_fails_fast_on_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_user_agent() must reject the .env.example placeholder (would 403 at SEC)."""
+    from src.company_resolver import _PLACEHOLDER_USER_AGENT, _user_agent
+
+    monkeypatch.setenv("SEC_USER_AGENT", _PLACEHOLDER_USER_AGENT)
+    with pytest.raises(RuntimeError, match="placeholder"):
+        _user_agent()
+
+
 def test_all_metadata_tickers_have_valid_fy_month() -> None:
     """Every entry in _TICKER_METADATA must have a valid fiscal-year-end month (1–12)."""
     for ticker, (fy_month, _) in _TICKER_METADATA.items():

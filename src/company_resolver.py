@@ -41,10 +41,13 @@ _RAW_DIR = _REPO_ROOT / "data" / "raw"
 _CONFIG_DIR = _REPO_ROOT / "config"
 _CACHE_PATH = _RAW_DIR / "sec_tickers.json"
 
-# Privacy guard: this fallback never contains a real email address.
+# Privacy guard: this placeholder never contains a real email address.
 # SEC requires an email in the User-Agent header for fair-use compliance.
 # Set SEC_USER_AGENT in .env to "your-project/1.0 yourname+sec@gmail.com".
-_DEFAULT_USER_AGENT = "ai-financial-analyst-portfolio/1.0 contact@example.com"
+# _user_agent() refuses to send a request with this placeholder.
+_PLACEHOLDER_USER_AGENT = "ai-financial-analyst-portfolio/1.0 contact@example.com"
+# Backwards-compatible alias retained for the privacy-regression test.
+_DEFAULT_USER_AGENT = _PLACEHOLDER_USER_AGENT
 
 # Fallback metadata table: ticker → (fiscal_year_end_month, sector_etf)
 # Month integers: 1=January … 12=December.  fy7=July (PANW), fy1=January, etc.
@@ -81,10 +84,22 @@ class CompanyMetadata(TypedDict):
 def _user_agent() -> str:
     """Return the SEC ``User-Agent`` header value.
 
-    Reads ``SEC_USER_AGENT`` from the environment; falls back to the
-    module-level placeholder (which contains no real email address).
+    SEC fair-use policy requires a real contact email in the User-Agent header.
+    Submissions with the placeholder address are rejected with 403, so we
+    refuse to send the request at all rather than producing a confusing failure.
+
+    Raises:
+        RuntimeError: if SEC_USER_AGENT is unset or still equal to the
+            placeholder shipped in ``.env.example``.
     """
-    return os.environ.get("SEC_USER_AGENT", _DEFAULT_USER_AGENT)
+    ua = os.environ.get("SEC_USER_AGENT", "").strip()
+    if not ua or ua == _PLACEHOLDER_USER_AGENT:
+        raise RuntimeError(
+            "SEC_USER_AGENT is not set (or still set to the .env.example placeholder). "
+            "SEC fair-use policy requires a real contact email — see .env.example for "
+            "the recommended GitHub noreply form."
+        )
+    return ua
 
 
 def _cache_is_fresh() -> bool:
