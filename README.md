@@ -260,19 +260,6 @@ ask: *"For the $1.2B revenue figure in the commentary, what is the source filing
 
 ---
 
-## Tests
-
-```bash
-make test      # pytest + coverage (≥60% target)
-make eval      # eval harness only
-make qa        # lint + typecheck + test + eval
-```
-
-Coverage excludes `build_excel_model.py` and `build_notebooklm_bundle.py`
-(tested via end-to-end integration, not unit tests).
-
----
-
 ## Limitations
 
 - **Small sample:** ~20 quarterly observations per company — forecast intervals
