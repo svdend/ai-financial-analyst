@@ -212,6 +212,149 @@ def test_fact_financials_no_ytd_duplicates(tmp_path: Path) -> None:
     ), f"YTD duplicates still present after deduplication:\n{dup_rows.to_string()}"
 
 
+def test_fact_financials_unique_per_period_end(tmp_path: Path) -> None:
+    """fact_financials must have at most one row per (ticker, line_item, period_end).
+
+    Load-bearing invariant for Tableau — duplicates cause the default AVG
+    aggregation to silently halve values and break growth calculations.
+    Covers both actuals and derived metrics (gross_margin_pct etc.).
+    """
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _export_fact_financials(con)
+    finally:
+        con.close()
+
+    dupes = df.duplicated(subset=["ticker", "line_item", "period_end"], keep=False)
+    dup_rows = df[dupes][["line_item", "period_end", "fiscal_year", "fiscal_period", "value"]]
+    assert (
+        len(dup_rows) == 0
+    ), f"Duplicate (ticker, line_item, period_end) rows in export:\n{dup_rows.to_string()}"
+
+
+def test_fact_financials_collapses_multi_fiscal_year_comparatives(tmp_path: Path) -> None:
+    """fact_financials must collapse multi-fiscal-year comparatives to one row.
+
+    A 10-Q for FY2026-Q1 carries the prior-year same-quarter row as a
+    comparative — same ``period_end`` but a different ``fiscal_year`` and
+    often a different ``frame`` than the original FY2025-Q1 filing.  Both
+    rows survive ``v_canonical_facts`` (which partitions on ``frame``) and
+    Tableau's default AVG aggregation would silently halve the value.
+
+    The export must collapse these to one canonical row per period_end using
+    form-priority + latest filed_date, so growth calculations are correct.
+    """
+    import duckdb
+
+    from src.build_warehouse import _SQL_CANONICAL
+
+    db_path = tmp_path / "synthetic.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("""
+            CREATE TABLE raw_financials (
+                ticker        VARCHAR,
+                line_item     VARCHAR,
+                concept_used  VARCHAR,
+                period_end    DATE,
+                period_type   VARCHAR,
+                fiscal_year   INTEGER,
+                fiscal_period VARCHAR,
+                value         DOUBLE,
+                unit          VARCHAR,
+                accession_no  VARCHAR,
+                fact_id       VARCHAR,
+                filing_url    VARCHAR,
+                form_type     VARCHAR,
+                filed_date    DATE,
+                frame         VARCHAR
+            )
+        """)
+        # Two rows for the same (ticker, line_item, period_end) — the original
+        # FY2025-Q1 10-Q row and the comparative carried in the FY2026-Q1 10-Q.
+        # Different fiscal_year + different frame would let both survive the
+        # v_canonical_facts QUALIFY otherwise.  The newer 10-Q (latest
+        # filed_date) must win.
+        rows = [
+            (
+                "TEST",
+                "Revenue",
+                "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "2024-10-31",
+                "Q",
+                2025,
+                "Q1",
+                2_138_800_000.0,
+                "USD",
+                "0000000000-24-000001",
+                "fact-2025",
+                "https://example/2025",
+                "10-Q",
+                "2024-11-21",
+                "CY2024Q4",
+            ),
+            (
+                "TEST",
+                "Revenue",
+                "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "2024-10-31",
+                "Q",
+                2026,
+                "Q1",
+                2_139_000_000.0,
+                "USD",
+                "0000000000-25-000001",
+                "fact-2026",
+                "https://example/2026",
+                "10-Q",
+                "2025-11-20",
+                "",
+            ),
+        ]
+        con.executemany(
+            "INSERT INTO raw_financials VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        con.execute(_SQL_CANONICAL)
+        # _export_fact_financials also reads v_key_metrics for derived metrics;
+        # an empty stub is enough — the dedup invariant is what we assert.
+        con.execute("""
+            CREATE VIEW v_key_metrics AS
+            SELECT
+                CAST(NULL AS DATE)    AS period_end,
+                CAST(NULL AS INTEGER) AS fiscal_year,
+                CAST(NULL AS VARCHAR) AS fiscal_period,
+                CAST(NULL AS DOUBLE)  AS gross_margin_pct,
+                CAST(NULL AS DOUBLE)  AS operating_margin_pct,
+                CAST(NULL AS DOUBLE)  AS net_margin_pct,
+                CAST(NULL AS DOUBLE)  AS fcf_margin_pct,
+                CAST(NULL AS DOUBLE)  AS revenue_yoy_growth,
+                CAST(NULL AS DOUBLE)  AS revenue_qoq_growth
+            WHERE FALSE
+        """)
+
+        df = _export_fact_financials(con)
+    finally:
+        con.close()
+
+    # Exactly one row per (ticker, line_item, period_end) — the load-bearing
+    # invariant for Tableau's AVG aggregation.
+    dupes = df.duplicated(subset=["ticker", "line_item", "period_end"], keep=False)
+    assert not dupes.any(), (
+        "Multi-fiscal-year comparative duplicates not collapsed; got:\n"
+        f"{df[dupes][['ticker', 'line_item', 'period_end', 'fiscal_year', 'value', 'filed_date']].to_string()}"
+    )
+
+    # The newer filing (FY2026-Q1 10-Q, filed 2025-11-20) must win.
+    revenue = df[(df["line_item"] == "Revenue") & (df["period_end"].astype(str) == "2024-10-31")]
+    assert len(revenue) == 1
+    assert int(revenue.iloc[0]["fiscal_year"]) == 2026
+    assert revenue.iloc[0]["accession_no"] == "0000000000-25-000001"
+
+
 # ── _export_fact_forecasts ────────────────────────────────────────────────────
 
 

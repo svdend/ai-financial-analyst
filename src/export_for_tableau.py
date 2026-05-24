@@ -211,19 +211,38 @@ def _fiscal_to_calendar_quarter(
 def _export_fact_financials(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     """Long-format actuals with provenance columns.
 
-    Deduplication note
-    ------------------
-    SEC XBRL filings report both a 3-month standalone value and a YTD
-    cumulative value for the same concept and period_end date (e.g. a Q2
-    10-Q includes both the Q2 standalone and the H1 YTD revenue figure).
-    Both rows pass the ``period_type = 'Q'`` filter because they share the
-    same ``fiscal_period``.  We resolve duplicates by keeping the row with
-    the minimum absolute value per (ticker, line_item, period_end,
-    fiscal_year, fiscal_period) group — the standalone quarterly value is
-    always ≤ the YTD cumulative for income-statement and cash-flow items,
-    and balance-sheet items (point-in-time) are identical across contexts.
+    Deduplication notes
+    -------------------
+    Two distinct sources of duplication must be resolved before the CSV is
+    Tableau-safe (Tableau's default AVG aggregation silently halves doubled
+    values):
+
+    1. **Multi-fiscal-year comparatives.**  A 10-Q for FY2026-Q1 carries the
+       prior-year same-quarter row as a comparative — same ``period_end`` but
+       a *different* ``fiscal_year`` / ``fiscal_period`` and often a different
+       ``frame`` than the original FY2025-Q1 filing.  ``v_canonical_facts``
+       partitions on ``frame`` so both rows survive.  We collapse them here
+       using a form-priority ordering (10-K/A > 10-Q/A > 10-K > 10-Q) with
+       latest ``filed_date`` as tiebreaker — the same priority used inside
+       ``v_canonical_facts``, but partitioning only on
+       ``(ticker, line_item, period_end)`` so each calendar period_end yields
+       at most one row in the export.
+
+    2. **YTD vs standalone within the same filing.**  XBRL also reports a
+       3-month standalone value and a YTD cumulative value for the same
+       concept and period_end (e.g. a Q2 10-Q includes both the Q2 standalone
+       and the H1 YTD revenue figure).  Both rows pass the ``period_type='Q'``
+       filter and share the same fiscal triple.  We resolve those by keeping
+       the row with the minimum absolute value per (ticker, line_item,
+       period_end, fiscal_year, fiscal_period) — the standalone quarterly
+       value is always <= the YTD cumulative for income-statement and
+       cash-flow items, and balance-sheet items (point-in-time) are identical
+       across contexts.
     """
-    # Pull from v_canonical_facts — already one row per (line_item, period_end)
+    # Pull from v_canonical_facts and collapse multi-fiscal-year comparatives
+    # to one canonical row per (ticker, line_item, period_end) using form
+    # priority + most-recent filed_date.  This is what makes the export
+    # Tableau-safe: every (line_item, period_end) pair appears exactly once.
     df = con.execute("""
         SELECT
             ticker,
@@ -242,10 +261,24 @@ def _export_fact_financials(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
             filed_date
         FROM v_canonical_facts
         WHERE period_type = 'Q'
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY ticker, line_item, period_end
+            ORDER BY
+                CASE form_type
+                    WHEN '10-K/A' THEN 4
+                    WHEN '10-Q/A' THEN 3
+                    WHEN '10-K'   THEN 2
+                    WHEN '10-Q'   THEN 1
+                    ELSE 0
+                END DESC,
+                filed_date DESC
+        ) = 1
         ORDER BY line_item, fiscal_year, fiscal_period
     """).fetchdf()
 
     # Drop YTD duplicates: sort by abs(value) ascending, keep first per group.
+    # (After the form-priority collapse above the surviving rows still need this
+    # pass because YTD/standalone duplication happens within a single filing.)
     dedup_key = ["ticker", "line_item", "period_end", "fiscal_year", "fiscal_period"]
     if len(df) > 0:
         n_before = len(df)
@@ -311,6 +344,18 @@ def _export_fact_financials(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
 
     if derived_rows:
         df = pd.concat([df, pd.DataFrame(derived_rows)], ignore_index=True)
+
+    # Final guard: derived metrics (gross_margin_pct, revenue_yoy_growth, ...)
+    # come from v_key_metrics, which is grouped by (period_end, fiscal_year,
+    # fiscal_period) — so a period_end that is reported under two fiscal_years
+    # (the original filing + a later filing's prior-year comparative) yields
+    # two derived rows.  Collapse to one row per (ticker, line_item,
+    # period_end), preferring the later fiscal_year (most recent restatement
+    # of the metric) for consistency with the form-priority pass above.
+    if len(df) > 0:
+        df = df.sort_values(
+            ["fiscal_year", "fiscal_period"], ascending=[False, False]
+        ).drop_duplicates(subset=["ticker", "line_item", "period_end"], keep="first")
 
     return df.sort_values(["line_item", "fiscal_year", "fiscal_period"]).reset_index(drop=True)
 
