@@ -17,9 +17,3 @@ OperatingCashFlow,Operating Cash Flow,Cash Flow,USD
 CapEx,Capital Expenditures,Cash Flow,USD
 FreeCashFlow,Free Cash Flow,Cash Flow,USD
 StockBasedCompensation,Stock-Based Compensation,Cash Flow,USD
-gross_margin_pct,Gross Margin %,Margins,pct
-operating_margin_pct,Operating Margin %,Margins,pct
-net_margin_pct,Net Margin %,Margins,pct
-fcf_margin_pct,FCF Margin %,Margins,pct
-revenue_yoy_growth,Revenue YoY Growth,Growth,pct
-revenue_qoq_growth,Revenue QoQ Growth,Growth,pct

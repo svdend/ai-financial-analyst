@@ -170,8 +170,14 @@ def test_fact_financials_contains_revenue(tmp_path: Path) -> None:
     assert "Revenue" in df["line_item"].values
 
 
-def test_fact_financials_derived_metrics_present(tmp_path: Path) -> None:
-    """fact_financials should include derived metrics (operating_margin_pct or revenue_yoy_growth)."""
+def test_fact_financials_excludes_derived_metrics(tmp_path: Path) -> None:
+    """fact_financials must NOT contain derived metrics — they are Tableau calc fields.
+
+    Margins and growth rates have no single source accession_no, so exporting
+    them as fact rows breaks the README's "every point traces to a filing"
+    claim.  They live in Tableau_Setup.md §5 as calculated fields computed
+    from the sourced Revenue/GrossProfit/OperatingIncome/etc. rows.
+    """
     db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
     import duckdb
 
@@ -180,11 +186,38 @@ def test_fact_financials_derived_metrics_present(tmp_path: Path) -> None:
         df = _export_fact_financials(con)
     finally:
         con.close()
-    derived = {"operating_margin_pct", "revenue_yoy_growth", "revenue_qoq_growth"}
-    found = derived & set(df["line_item"].values)
-    assert (
-        found
-    ), f"No derived metrics found in fact_financials; got line_items: {df['line_item'].unique()}"
+    derived = {
+        "gross_margin_pct",
+        "operating_margin_pct",
+        "net_margin_pct",
+        "fcf_margin_pct",
+        "revenue_yoy_growth",
+        "revenue_qoq_growth",
+    }
+    leaked = derived & set(df["line_item"].values)
+    assert not leaked, f"Derived metrics leaked into fact_financials: {leaked}"
+
+
+def test_fact_financials_every_row_has_accession(tmp_path: Path) -> None:
+    """Every row in fact_financials must carry a non-null accession_no.
+
+    Load-bearing invariant for the README claim that every Tableau mark
+    traces to an SEC filing.  Derived rows (margins, growth) used to violate
+    this — they are now Tableau calc fields, not fact rows.
+    """
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _export_fact_financials(con)
+    finally:
+        con.close()
+    missing = df[df["accession_no"].isna()]
+    assert missing.empty, (
+        "fact_financials rows without accession_no:\n"
+        f"{missing[['line_item', 'period_end', 'fiscal_year']].to_string()}"
+    )
 
 
 def test_fact_financials_no_ytd_duplicates(tmp_path: Path) -> None:
@@ -319,22 +352,6 @@ def test_fact_financials_collapses_multi_fiscal_year_comparatives(tmp_path: Path
             rows,
         )
         con.execute(_SQL_CANONICAL)
-        # _export_fact_financials also reads v_key_metrics for derived metrics;
-        # an empty stub is enough — the dedup invariant is what we assert.
-        con.execute("""
-            CREATE VIEW v_key_metrics AS
-            SELECT
-                CAST(NULL AS DATE)    AS period_end,
-                CAST(NULL AS INTEGER) AS fiscal_year,
-                CAST(NULL AS VARCHAR) AS fiscal_period,
-                CAST(NULL AS DOUBLE)  AS gross_margin_pct,
-                CAST(NULL AS DOUBLE)  AS operating_margin_pct,
-                CAST(NULL AS DOUBLE)  AS net_margin_pct,
-                CAST(NULL AS DOUBLE)  AS fcf_margin_pct,
-                CAST(NULL AS DOUBLE)  AS revenue_yoy_growth,
-                CAST(NULL AS DOUBLE)  AS revenue_qoq_growth
-            WHERE FALSE
-        """)
 
         df = _export_fact_financials(con)
     finally:
@@ -452,6 +469,7 @@ def test_fact_forecasts_join_to_dim_date_is_one_to_one(tmp_path: Path) -> None:
         patch("src.export_for_tableau._PROCESSED_DIR", tmp_path),
         patch("src.export_for_tableau._MODELS_DIR", models_dir),
         patch("src.export_for_tableau._TABLEAU_DIR", tableau_dir),
+        patch("src.export_for_tableau._DASHBOARD_DIR", tmp_path),
     ):
         export(ticker="PANW")
 
@@ -480,6 +498,7 @@ def test_export_writes_all_csv_files(tmp_path: Path) -> None:
         patch("src.export_for_tableau._PROCESSED_DIR", tmp_path),
         patch("src.export_for_tableau._MODELS_DIR", tmp_path / "models"),
         patch("src.export_for_tableau._TABLEAU_DIR", tableau_dir),
+        patch("src.export_for_tableau._DASHBOARD_DIR", tmp_path),
     ):
         paths = export(ticker="PANW")
 
@@ -505,6 +524,7 @@ def test_export_fact_financials_accession_non_empty(tmp_path: Path) -> None:
         patch("src.export_for_tableau._PROCESSED_DIR", tmp_path),
         patch("src.export_for_tableau._MODELS_DIR", tmp_path / "models"),
         patch("src.export_for_tableau._TABLEAU_DIR", tableau_dir),
+        patch("src.export_for_tableau._DASHBOARD_DIR", tmp_path),
     ):
         export(ticker="PANW")
 

@@ -69,21 +69,23 @@ is built from `fact_financials` joined to the dimension tables.
   Form: <form_type>
   ATTR([filing_url])  ← wire up as a URL action (see §6)
   ```
-- This is the only sheet with click-through provenance — the margins and
-  growth sheets are derived metrics that don't map 1:1 to a single filing.
+- Click-through provenance is direct here — every Revenue mark is a single
+  XBRL fact with a single accession.
 
 ### Sheet 2: PANW Margins %
 - Rows: gross margin %, operating margin %, net margin % (three measures
   on the same axis, or three rows)
 - Columns: `period_end` (continuous, quarterly)
 - Marks: Line, one colour per margin type
-- Calculated fields:
+- Calculated fields (see §5):
   ```
   Gross Margin %     = SUM([GrossProfit])  / SUM([Revenue])
   Operating Margin % = SUM([OperatingIncome]) / SUM([Revenue])
   Net Margin %       = SUM([NetIncome])    / SUM([Revenue])
   ```
 - Format axis as percentage; reference lines optional.
+- Provenance: each margin computes from two source rows (numerator and
+  denominator) — show both accession_no values in the mark's tooltip.
 
 ### Sheet 3: Revenue Growth
 - Rows: YoY revenue growth %
@@ -96,6 +98,8 @@ is built from `fact_financials` joined to the dimension tables.
     / ABS(LOOKUP(SUM([Revenue]), -4))
   ```
 - Filter out the first four quarters (no prior-year comparable).
+- Provenance: each growth value comes from two Revenue rows (current quarter
+  + same quarter prior year) — both accession_no values are tooltip-able.
 
 ### Future work (v2 — not yet published)
 
@@ -116,19 +120,39 @@ workbook. They are tracked as v2 dashboard work:
 
 ---
 
-## 5. Sample Calculated Fields
+## 5. Calculated Fields (margins, growth, variance)
 
-Paste these into Tableau's **Calculated Field** editor:
+Margins and growth rates are **not** materialized as fact rows in
+`fact_financials.csv` — they have no single source accession and would break
+the "every mark traces to a filing" claim. Compute them in Tableau as
+calculated fields from the sourced rows. Provenance flows naturally: each
+input row carries its own `accession_no`, so a margin or growth tooltip can
+list the source filings used.
 
 ```
-// Revenue Variance %
-([Revenue Actual] - [Revenue Forecast]) / ABS([Revenue Forecast])
+// Margins (use SUMIF-style expressions over the long-format fact_financials)
+Gross Margin %     = SUM(IF [line_item]='GrossProfit'      THEN [value] END)
+                   / SUM(IF [line_item]='Revenue'          THEN [value] END)
 
-// MAPE per fold
-ABS(([Revenue Actual] - [Revenue Forecast]) / [Revenue Actual])
+Operating Margin % = SUM(IF [line_item]='OperatingIncome'  THEN [value] END)
+                   / SUM(IF [line_item]='Revenue'          THEN [value] END)
 
-// YoY Revenue Growth
-([Revenue] - LOOKUP([Revenue], -4)) / ABS(LOOKUP([Revenue], -4))
+Net Margin %       = SUM(IF [line_item]='NetIncome'        THEN [value] END)
+                   / SUM(IF [line_item]='Revenue'          THEN [value] END)
+
+FCF Margin %       = SUM(IF [line_item]='FreeCashFlow'     THEN [value] END)
+                   / SUM(IF [line_item]='Revenue'          THEN [value] END)
+
+// Growth (period_end on Columns, sorted ascending, line_item filtered to Revenue)
+YoY Revenue Growth = (SUM([value]) - LOOKUP(SUM([value]), -4))
+                     / ABS(LOOKUP(SUM([value]), -4))
+
+QoQ Revenue Growth = (SUM([value]) - LOOKUP(SUM([value]), -1))
+                     / ABS(LOOKUP(SUM([value]), -1))
+
+// Variance + accuracy (against fact_forecasts)
+Revenue Variance % = ([Revenue Actual] - [Revenue Forecast]) / ABS([Revenue Forecast])
+MAPE per fold      = ABS(([Revenue Actual] - [Revenue Forecast]) / [Revenue Actual])
 ```
 
 ---

@@ -41,6 +41,7 @@ _CONFIG_PATH = _REPO_ROOT / "config" / "company.yaml"
 _PROCESSED_DIR = _REPO_ROOT / "data" / "processed"
 _MODELS_DIR = _REPO_ROOT / "models"
 _TABLEAU_DIR = _REPO_ROOT / "dashboard" / "tableau_data"
+_DASHBOARD_DIR = _REPO_ROOT / "dashboard"
 
 # ── Metric metadata ────────────────────────────────────────────────────────────
 # Controls dim_metric.csv — human labels and category groupings for Tableau.
@@ -141,33 +142,11 @@ _METRIC_META: list[dict[str, str]] = [
         "category": "Cash Flow",
         "unit": "USD",
     },
-    # Derived metrics
-    {
-        "line_item": "gross_margin_pct",
-        "label": "Gross Margin %",
-        "category": "Margins",
-        "unit": "pct",
-    },
-    {
-        "line_item": "operating_margin_pct",
-        "label": "Operating Margin %",
-        "category": "Margins",
-        "unit": "pct",
-    },
-    {"line_item": "net_margin_pct", "label": "Net Margin %", "category": "Margins", "unit": "pct"},
-    {"line_item": "fcf_margin_pct", "label": "FCF Margin %", "category": "Margins", "unit": "pct"},
-    {
-        "line_item": "revenue_yoy_growth",
-        "label": "Revenue YoY Growth",
-        "category": "Growth",
-        "unit": "pct",
-    },
-    {
-        "line_item": "revenue_qoq_growth",
-        "label": "Revenue QoQ Growth",
-        "category": "Growth",
-        "unit": "pct",
-    },
+    # Margins and growth rates are NOT exported as fact rows — they are
+    # computed inside Tableau as calculated fields from the sourced rows
+    # above (see Tableau_Setup.md §5).  This keeps every fact row tied to a
+    # single SEC accession_no instead of carrying derived rows with no
+    # provenance.
 ]
 
 
@@ -314,69 +293,6 @@ def _export_fact_financials(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
             logger.info(
                 "  Removed %d YTD duplicate rows (kept standalone quarterly values)", n_removed
             )
-
-    # Add derived metrics from v_key_metrics
-    metrics = con.execute("""
-        SELECT
-            period_end,
-            fiscal_year,
-            fiscal_period,
-            gross_margin_pct,
-            operating_margin_pct,
-            net_margin_pct,
-            fcf_margin_pct,
-            revenue_yoy_growth,
-            revenue_qoq_growth
-        FROM v_key_metrics
-        ORDER BY fiscal_year, fiscal_period
-    """).fetchdf()
-
-    ticker = df["ticker"].iloc[0] if len(df) > 0 else ""
-    derived_rows: list[dict[str, Any]] = []
-    for _, mrow in metrics.iterrows():
-        for col in (
-            "gross_margin_pct",
-            "operating_margin_pct",
-            "net_margin_pct",
-            "fcf_margin_pct",
-            "revenue_yoy_growth",
-            "revenue_qoq_growth",
-        ):
-            val = mrow[col]
-            if pd.notna(val):
-                derived_rows.append(
-                    {
-                        "ticker": ticker,
-                        "line_item": col,
-                        "period_end": mrow["period_end"],
-                        "period_type": "Q",
-                        "fiscal_year": mrow["fiscal_year"],
-                        "fiscal_period": mrow["fiscal_period"],
-                        "value": float(val),
-                        "unit": "pct",
-                        "concept_used": "derived",
-                        "accession_no": None,
-                        "fact_id": None,
-                        "filing_url": None,
-                        "form_type": None,
-                        "filed_date": None,
-                    }
-                )
-
-    if derived_rows:
-        df = pd.concat([df, pd.DataFrame(derived_rows)], ignore_index=True)
-
-    # Final guard: derived metrics (gross_margin_pct, revenue_yoy_growth, ...)
-    # come from v_key_metrics, which is grouped by (period_end, fiscal_year,
-    # fiscal_period) — so a period_end that is reported under two fiscal_years
-    # (the original filing + a later filing's prior-year comparative) yields
-    # two derived rows.  Collapse to one row per (ticker, line_item,
-    # period_end), preferring the later fiscal_year (most recent restatement
-    # of the metric) for consistency with the form-priority pass above.
-    if len(df) > 0:
-        df = df.sort_values(
-            ["fiscal_year", "fiscal_period"], ascending=[False, False]
-        ).drop_duplicates(subset=["ticker", "line_item", "period_end"], keep="first")
 
     return df.sort_values(["line_item", "fiscal_year", "fiscal_period"]).reset_index(drop=True)
 
@@ -574,7 +490,11 @@ def _try_write_hyper(tableau_dir: Path, ticker: str) -> None:
 
 
 def _write_tableau_setup_md(output_dir: Path, ticker: str) -> None:
-    """Write Tableau_Setup.md with connection instructions."""
+    """Write Tableau_Setup.md with connection instructions.
+
+    Kept in sync with dashboard/Tableau_Setup.md (the ticker-agnostic version
+    of the same content).  See bead a2d for the planned template extraction.
+    """
     content = f"""# Tableau Setup — {ticker} Financial Model
 
 > **⚠️ WARNING: Tableau Public publishes data WORLD-READABLE and Google-INDEXABLE.**
@@ -619,54 +539,117 @@ carry a tooltip linking to the source SEC filing.
 2. **Connect → Text File** → select `fact_financials.csv`.
 3. Add remaining files via **Data Source** tab → drag each CSV to the canvas.
 4. Create the joins as described above.
-5. (Optional) Connect to the `.hyper` extract for faster performance.
+
+> The CSVs are the authoritative source — open all five via Tableau's Text
+> File connector. The `.hyper` extract bundled in `tableau_data/` is a
+> **`fact_financials`-only** convenience extract for faster scrolling on
+> large quarter ranges; it is **not** a substitute for the `dim_*` and
+> `fact_forecasts` CSVs. If you connect to the `.hyper` you will be missing
+> the date/metric/filing dimensions and all forecast rows.
 
 ---
 
 ## 4. Recommended Worksheets
 
-### Sheet 1: Actual vs Forecast
-- Rows: Revenue ($B)
-- Columns: period_end (continuous)
-- Marks: Line
-- Dual axis: actuals (from `fact_financials`) + forecast bands (from `fact_forecasts`)
-- **Add a "Source" tooltip** on every actual mark:
+The three sheets below match the **currently published v1 dashboard**. Each
+is built from `fact_financials` joined to the dimension tables.
+
+### Sheet 1: Revenue Actuals
+- Rows: `SUM([value])` filtered to `line_item = 'Revenue'`, scaled to $B
+- Columns: `period_end` (continuous, quarterly)
+- Marks: Line + circle for individual quarter marks
+- Filters: `line_item = 'Revenue'`
+- **"Source" tooltip** on every mark, joined via `dim_filing`:
   ```
   Accession: <accession_no>
   Filed: <filed_date>
   Form: <form_type>
-  ATTR([filing_url])  ← make this a URL action
+  ATTR([filing_url])  ← wire up as a URL action (see §6)
   ```
+- Click-through provenance is direct here — every Revenue mark is a single
+  XBRL fact with a single accession.
 
-### Sheet 2: Variance Drivers
-- Once `v_variance_facts` is built (Prompt 7.5), export and add `fact_variance.csv`
-- Bar chart: `revenue_variance_vs_forecast` per quarter
-- Colour by driver type (volume / margin / mix / one-time)
+### Sheet 2: Margins %
+- Rows: gross margin %, operating margin %, net margin % (three measures
+  on the same axis, or three rows)
+- Columns: `period_end` (continuous, quarterly)
+- Marks: Line, one colour per margin type
+- Calculated fields (see §5):
+  ```
+  Gross Margin %     = SUM([GrossProfit])  / SUM([Revenue])
+  Operating Margin % = SUM([OperatingIncome]) / SUM([Revenue])
+  Net Margin %       = SUM([NetIncome])    / SUM([Revenue])
+  ```
+- Format axis as percentage; reference lines optional.
+- Provenance: each margin computes from two source rows (numerator and
+  denominator) — show both accession_no values in the mark's tooltip.
 
-### Sheet 3: Forecast Accuracy
-- Line chart: MAE and MAPE per CV fold, grouped by model
-- Reference line at 10% MAPE (guidance threshold)
+### Sheet 3: Revenue Growth
+- Rows: YoY revenue growth %
+- Columns: `period_end` (continuous, quarterly)
+- Marks: Bar (positive/negative colour split) or Line
+- Calculated field:
+  ```
+  YoY Revenue Growth =
+    (SUM([Revenue]) - LOOKUP(SUM([Revenue]), -4))
+    / ABS(LOOKUP(SUM([Revenue]), -4))
+  ```
+- Filter out the first four quarters (no prior-year comparable).
+- Provenance: each growth value comes from two Revenue rows (current quarter
+  + same quarter prior year) — both accession_no values are tooltip-able.
 
-### Sheet 4: Scenario Toggle
-- Parameter: Base / Bull / Bear
-- Filter `fact_forecasts` by model
-- Show revenue forecast with CI bands
+### Future work (v2 — not yet published)
+
+The pipeline already produces `fact_forecasts.csv` and `v_variance_facts`,
+but the following four sheets have not been built into the published
+workbook. They are tracked as v2 dashboard work:
+
+- **Actual vs Forecast** — dual-axis line: actuals from `fact_financials` +
+  forecast bands (80% / 95% CIs) from `fact_forecasts`, three-model ensemble
+  (Prophet / AutoARIMA / Lasso).
+- **Variance Drivers** — bar chart of `revenue_variance_vs_forecast` per
+  quarter, coloured by driver type (volume / margin / mix / one-time) from
+  `v_variance_facts`.
+- **Forecast Accuracy** — MAE and MAPE per expanding-window CV fold,
+  grouped by model, with a 10% MAPE reference line.
+- **Scenario Toggle** — parameter-driven Base / Bull / Bear filter on
+  `fact_forecasts`, showing revenue forecast with CI bands.
 
 ---
 
-## 5. Sample Calculated Fields
+## 5. Calculated Fields (margins, growth, variance)
 
-Paste these into Tableau's **Calculated Field** editor:
+Margins and growth rates are **not** materialized as fact rows in
+`fact_financials.csv` — they have no single source accession and would break
+the "every mark traces to a filing" claim. Compute them in Tableau as
+calculated fields from the sourced rows. Provenance flows naturally: each
+input row carries its own `accession_no`, so a margin or growth tooltip can
+list the source filings used.
 
 ```
-// Revenue Variance %
-([Revenue Actual] - [Revenue Forecast]) / ABS([Revenue Forecast])
+// Margins (use SUMIF-style expressions over the long-format fact_financials)
+Gross Margin %     = SUM(IF [line_item]='GrossProfit'      THEN [value] END)
+                   / SUM(IF [line_item]='Revenue'          THEN [value] END)
 
-// MAPE per fold
-ABS(([Revenue Actual] - [Revenue Forecast]) / [Revenue Actual])
+Operating Margin % = SUM(IF [line_item]='OperatingIncome'  THEN [value] END)
+                   / SUM(IF [line_item]='Revenue'          THEN [value] END)
 
-// YoY Revenue Growth
-([Revenue] - LOOKUP([Revenue], -4)) / ABS(LOOKUP([Revenue], -4))
+Net Margin %       = SUM(IF [line_item]='NetIncome'        THEN [value] END)
+                   / SUM(IF [line_item]='Revenue'          THEN [value] END)
+
+FCF Margin %       = SUM(IF [line_item]='FreeCashFlow'     THEN [value] END)
+                   / SUM(IF [line_item]='Revenue'          THEN [value] END)
+
+// Growth (period_end on Columns, sorted ascending, line_item filtered to Revenue)
+YoY Revenue Growth = (SUM([value]) - LOOKUP(SUM([value]), -4))
+                     / ABS(LOOKUP(SUM([value]), -4))
+
+QoQ Revenue Growth = (SUM([value]) - LOOKUP(SUM([value]), -1))
+                     / ABS(LOOKUP(SUM([value]), -1))
+
+// Variance + accuracy (against fact_forecasts)
+Revenue Variance % = ([Revenue Actual] - [Revenue Forecast]) / ABS([Revenue Forecast])
+MAPE per fold      = ABS(([Revenue Actual] - [Revenue Forecast]) / [Revenue Actual])
 ```
 
 ---
@@ -784,7 +767,7 @@ def export(ticker: str | None = None) -> dict[str, Path]:
     _try_write_hyper(_TABLEAU_DIR, resolved_ticker)
 
     # ── Tableau_Setup.md ───────────────────────────────────────────────────────
-    _write_tableau_setup_md(_REPO_ROOT / "dashboard", resolved_ticker)
+    _write_tableau_setup_md(_DASHBOARD_DIR, resolved_ticker)
 
     return outputs
 
