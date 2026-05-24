@@ -192,16 +192,20 @@ preliminary-to-final value drift is handled silently.
 To regenerate: run `make dashboard TICKER=PANW` to refresh the CSVs in
 `dashboard/tableau_data/`, then republish following `dashboard/Tableau_Setup.md`.
 
-Sheets in the workbook:
+Sheets in the currently published v1 workbook:
 
-- **Actual vs Forecast** — three-model ensemble with CI bands
-- **Variance Drivers** — mechanical decomposition (volume / margin / mix /
-  one-time)
-- **Forecast Accuracy** — MAE / MAPE across expanding-window CV folds
-- **Scenario Toggle** — Base / Bull / Bear from the Excel model
+- **Revenue Actuals** — historical quarterly revenue with click-through to
+  source SEC filings
+- **PANW Margins %** — gross / operating / net margin trajectory
+- **Revenue Growth** — YoY revenue growth %
 
-Every data point has a "Source" tooltip showing `accession_no` with a
-clickable link to the SEC filing.
+The Revenue Actuals sheet has a "Source" tooltip showing `accession_no` with
+a clickable link to the SEC filing.
+
+The four-sheet variance/forecast workbook (Actual vs Forecast, Variance
+Drivers, Forecast Accuracy, Scenario Toggle) is **v2 work** — the underlying
+CSVs (`fact_forecasts.csv`, `v_variance_facts`) are already produced by the
+pipeline, but the workbook itself has not yet been built and published.
 
 ---
 
