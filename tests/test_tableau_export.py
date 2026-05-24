@@ -387,6 +387,85 @@ def test_fact_forecasts_loads_parquet(tmp_path: Path) -> None:
     assert (df["model"] == "prophet").all()
 
 
+def test_fact_forecasts_dates_snapped_to_fiscal_quarter_end(tmp_path: Path) -> None:
+    """Mixed-convention forecast dates snap to PANW fiscal quarter-end (Jan/Apr/Jul/Oct 31).
+
+    Inputs intentionally mix:
+      - quarter-start dates (autoarima, prophet) like 2026-04-01
+      - quarter-end dates (lasso) like 2026-04-30
+      - mid-quarter dates (2026-12-15) that should snap to the next fiscal QE
+    All must land on a PANW fiscal quarter-end so they join 1:1 against dim_date.
+    """
+    stub = pd.DataFrame(
+        {
+            "model": ["autoarima", "prophet", "lasso", "lasso"],
+            "period_end": pd.to_datetime(["2026-04-01", "2026-07-01", "2026-04-30", "2026-12-15"]),
+            "yhat": [1e9] * 4,
+            "yhat_lower_80": [0.9e9] * 4,
+            "yhat_upper_80": [1.1e9] * 4,
+            "yhat_lower_95": [0.8e9] * 4,
+            "yhat_upper_95": [1.2e9] * 4,
+        }
+    )
+    stub.to_parquet(tmp_path / "TEST_baseline_forecasts.parquet", index=False)
+
+    with patch("src.export_for_tableau._MODELS_DIR", tmp_path):
+        df = _export_fact_forecasts("TEST", fy_end_month=7)
+
+    assert (df["line_item"] == "Revenue").all()
+    expected = pd.to_datetime(["2026-04-30", "2026-07-31", "2026-04-30", "2027-01-31"])
+    assert sorted(df["period_end"].tolist()) == sorted(expected.tolist())
+
+
+def test_fact_forecasts_join_to_dim_date_is_one_to_one(tmp_path: Path) -> None:
+    """Every row in fact_forecasts.csv must join exactly one row in dim_date.csv."""
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    tableau_dir = tmp_path / "tableau_data"
+    config_path = tmp_path / "company.yaml"
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    stub = pd.DataFrame(
+        {
+            "model": ["autoarima", "autoarima", "prophet", "prophet", "lasso", "lasso"],
+            "period_end": pd.to_datetime(
+                [
+                    "2026-04-01",
+                    "2026-07-01",
+                    "2026-07-01",
+                    "2026-10-01",
+                    "2026-04-30",
+                    "2026-07-31",
+                ]
+            ),
+            "yhat": [1e9] * 6,
+            "yhat_lower_80": [0.9e9] * 6,
+            "yhat_upper_80": [1.1e9] * 6,
+            "yhat_lower_95": [0.8e9] * 6,
+            "yhat_upper_95": [1.2e9] * 6,
+        }
+    )
+    stub.to_parquet(models_dir / "PANW_baseline_forecasts.parquet", index=False)
+
+    with (
+        patch("src.export_for_tableau._CONFIG_PATH", config_path),
+        patch("src.export_for_tableau._PROCESSED_DIR", tmp_path),
+        patch("src.export_for_tableau._MODELS_DIR", models_dir),
+        patch("src.export_for_tableau._TABLEAU_DIR", tableau_dir),
+    ):
+        export(ticker="PANW")
+
+    fcst = pd.read_csv(tableau_dir / "fact_forecasts.csv")
+    dim = pd.read_csv(tableau_dir / "dim_date.csv")
+    merged = fcst.merge(dim, left_on="period_end", right_on="date_key", how="left", indicator=True)
+    unmatched = merged[merged["_merge"] != "both"]
+    assert unmatched.empty, (
+        f"Forecast rows did not join to dim_date: "
+        f"{unmatched[['model', 'period_end']].to_dict('records')}"
+    )
+    assert (fcst["line_item"] == "Revenue").all()
+
+
 # ── Full export integration ────────────────────────────────────────────────────
 
 

@@ -171,6 +171,27 @@ _METRIC_META: list[dict[str, str]] = [
 ]
 
 
+# ── Helper: snap to fiscal quarter-end ────────────────────────────────────────
+
+
+def _snap_to_fiscal_quarter_end(ts: pd.Timestamp, fy_end_month: int) -> pd.Timestamp:
+    """Snap a timestamp forward to its enclosing fiscal quarter-end (last day of month).
+
+    Forecast notebooks emit a mix of conventions: Prophet/AutoARIMA produce
+    quarter-start dates, Lasso produces quarter-end. Tableau joins on
+    fact_financials.period_end (always a real fiscal quarter-end like 2026-04-30
+    for a July fiscal year) require every forecast row to share that convention.
+    """
+    ts = pd.to_datetime(ts)
+    qe_months = sorted({((fy_end_month - 3 * i - 1) % 12) + 1 for i in range(4)})
+    year, month = ts.year, ts.month
+    target = next((m for m in qe_months if m >= month), None)
+    if target is None:
+        target = qe_months[0]
+        year += 1
+    return pd.Timestamp(year=year, month=target, day=1) + pd.offsets.MonthEnd(0)
+
+
 # ── Helper: fiscal period → calendar quarter ──────────────────────────────────
 
 
@@ -360,8 +381,14 @@ def _export_fact_financials(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     return df.sort_values(["line_item", "fiscal_year", "fiscal_period"]).reset_index(drop=True)
 
 
-def _export_fact_forecasts(ticker: str) -> pd.DataFrame:
-    """Combine all model forecast parquets."""
+def _export_fact_forecasts(ticker: str, fy_end_month: int = 12) -> pd.DataFrame:
+    """Combine all model forecast parquets.
+
+    Snaps every period_end to the enclosing fiscal quarter-end so the resulting
+    rows join 1:1 against dim_date (and against fact_financials' real reporting
+    period_end). Adds a constant line_item='Revenue' column so forecasts can be
+    joined to dim_metric the same way fact_financials rows are.
+    """
     frames: list[pd.DataFrame] = []
     for fname in (
         f"{ticker}_baseline_forecasts.parquet",
@@ -382,6 +409,7 @@ def _export_fact_forecasts(ticker: str) -> pd.DataFrame:
             columns=[
                 "ticker",
                 "model",
+                "line_item",
                 "period_end",
                 "yhat",
                 "yhat_lower_80",
@@ -392,7 +420,10 @@ def _export_fact_forecasts(ticker: str) -> pd.DataFrame:
         )
 
     combined = pd.concat(frames, ignore_index=True)
-    combined["period_end"] = pd.to_datetime(combined["period_end"])
+    combined["period_end"] = pd.to_datetime(combined["period_end"]).map(
+        lambda ts: _snap_to_fiscal_quarter_end(ts, fy_end_month)
+    )
+    combined["line_item"] = "Revenue"
     return combined.sort_values(["model", "period_end"]).reset_index(drop=True)
 
 
@@ -719,7 +750,7 @@ def export(ticker: str | None = None) -> dict[str, Path]:
 
     # ── fact_forecasts ─────────────────────────────────────────────────────────
     logger.info("Exporting fact_forecasts...")
-    df_fcst = _export_fact_forecasts(resolved_ticker)
+    df_fcst = _export_fact_forecasts(resolved_ticker, fy_end_month=fy_end_month)
     p = _TABLEAU_DIR / "fact_forecasts.csv"
     df_fcst.to_csv(p, index=False)
     outputs["fact_forecasts"] = p
