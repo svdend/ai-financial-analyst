@@ -166,6 +166,32 @@ def _build_historical_financials(ticker: str) -> pd.DataFrame | None:
 # ── File 05: Forecast summary ─────────────────────────────────────────────────
 
 
+def _df_to_markdown_table(df: pd.DataFrame) -> str:
+    """Render a DataFrame as a GitHub-flavored markdown table.
+
+    Why: pandas' df.to_markdown() requires the optional ``tabulate`` package,
+    which we do not declare as a runtime dependency — without it, pandas emits
+    a string "Missing optional dependency 'tabulate'" instead of the table.
+    A NotebookLM source file with that error string is worse than no table.
+    """
+    headers = list(df.columns)
+    header_row = "| " + " | ".join(str(h) for h in headers) + " |"
+    sep_row = "| " + " | ".join("---" for _ in headers) + " |"
+    body_rows = [
+        "| " + " | ".join(_format_cell(v) for v in row) + " |"
+        for row in df.itertuples(index=False, name=None)
+    ]
+    return "\n".join([header_row, sep_row, *body_rows])
+
+
+def _format_cell(v: object) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        return f"{v:,.2f}"
+    return str(v)
+
+
 def _build_forecast_summary(ticker: str) -> str:
     """Generate forecast summary markdown from parquet files.
 
@@ -205,7 +231,7 @@ def _build_forecast_summary(ticker: str) -> str:
             cols = ["model", "period_end", "yhat", "yhat_lower_80", "yhat_upper_80"]
             avail = [c for c in cols if c in df.columns]
             if avail:
-                lines.append(df[avail].to_markdown(index=False))
+                lines.append(_df_to_markdown_table(df[avail]))
             lines.append("")
         except Exception as exc:
             lines.append(f"## {label}\n\n_Error reading parquet: {exc}_\n")

@@ -1,10 +1,12 @@
 """Tests for src/build_notebooklm_bundle.py.
 
-Covers two reviewer-facing invariants:
+Covers reviewer-facing invariants:
   - The bundle's Excel summary reads the file actually produced by
     src/build_excel_model.py (filename agreement).
   - When a real PDF is downloaded for a filing, no sibling .txt placeholder
     is left on disk for NotebookLM to ingest.
+  - Forecast summary renders a real markdown table with no "Missing
+    optional dependency 'tabulate'" stub leaking through.
 """
 
 from __future__ import annotations
@@ -13,8 +15,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pandas as pd
+
 from src import build_excel_model, build_notebooklm_bundle
-from src.build_notebooklm_bundle import _build_excel_model_summary, _download_sec_filing
+from src.build_notebooklm_bundle import (
+    _build_excel_model_summary,
+    _build_forecast_summary,
+    _download_sec_filing,
+)
 
 
 def test_excel_summary_filename_matches_excel_writer(tmp_path: Path) -> None:
@@ -87,3 +95,35 @@ def test_download_sec_filing_removes_stale_txt_placeholder(tmp_path: Path) -> No
         f"Stale .txt placeholder was not removed; bundle would include "
         f"both {pdf_dest.name} and {stale_txt.name}."
     )
+
+
+def test_forecast_summary_renders_table_without_tabulate(tmp_path: Path) -> None:
+    """05_forecast_summary.md must render a real table, not the tabulate stub.
+
+    df.to_markdown() requires the optional ``tabulate`` package. When it
+    isn't installed pandas inserts the literal string
+        "Missing optional dependency 'tabulate'"
+    into the output. NotebookLM ingests that as a citation source, which is
+    worse than no table at all. We render the table ourselves.
+    """
+    parquet = tmp_path / "TEST_baseline_forecasts.parquet"
+    pd.DataFrame(
+        {
+            "model": ["prophet", "autoarima"],
+            "period_end": pd.to_datetime(["2026-04-30", "2026-07-31"]),
+            "yhat": [1_000_000_000.0, 1_100_000_000.0],
+            "yhat_lower_80": [9.0e8, 1.0e9],
+            "yhat_upper_80": [1.1e9, 1.2e9],
+        }
+    ).to_parquet(parquet, index=False)
+
+    with patch.object(build_notebooklm_bundle, "_MODELS_DIR", tmp_path):
+        md = _build_forecast_summary("TEST")
+
+    assert (
+        "Missing optional dependency" not in md
+    ), f"Forecast summary leaked the tabulate-missing stub:\n{md}"
+    # The header row of the rendered table must be present.
+    assert (
+        "| model | period_end | yhat | yhat_lower_80 | yhat_upper_80 |" in md
+    ), f"Expected markdown table header not found in output:\n{md}"
