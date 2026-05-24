@@ -97,6 +97,68 @@ def test_download_sec_filing_removes_stale_txt_placeholder(tmp_path: Path) -> No
     )
 
 
+def test_sample_commentary_renamed_and_banner_added(tmp_path: Path) -> None:
+    """When the source commentary is *_SAMPLE*, bundle file embeds SAMPLE in name + banner.
+
+    Reviewer asked: don't ship a 07_exec_commentary.md whose accessions don't
+    appear in 04_historical_financials.csv. Fix is to make sample-vs-live
+    visible from filename and from a banner inside the file.
+    """
+    dashboard_dir = tmp_path / "dashboard"
+    dashboard_dir.mkdir()
+    sample_src = dashboard_dir / "TEST_exec_commentary_SAMPLE.md"
+    sample_src.write_text(
+        "# TEST Commentary (Sample)\nRevenue $1.0B [0000000000-00-000000]\n",
+        encoding="utf-8",
+    )
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "ticker: TEST\ncik: '0000000000'\ncik_int: 0\nname: Test Co\n"
+        "fiscal_year_end_month: 12\nfiscal_year_end_day: 31\n",
+        encoding="utf-8",
+    )
+    # Pre-create stale 07_exec_commentary.md to confirm cleanup.
+    stale = bundle_dir / "07_exec_commentary.md"
+    stale.write_text("# stale live commentary\n", encoding="utf-8")
+
+    # Stub network + heavy build steps so we only exercise the commentary path.
+    def _no_op(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    def _no_op_path(b_dir: Path) -> Path:
+        out = b_dir / "_stub.html"
+        out.write_text("stub", encoding="utf-8")
+        return out
+
+    with (
+        patch.object(build_notebooklm_bundle, "_DASHBOARD_DIR", dashboard_dir),
+        patch.object(build_notebooklm_bundle, "_BUNDLE_DIR", bundle_dir),
+        patch.object(build_notebooklm_bundle, "_CONFIG_PATH", config_path),
+        patch.object(build_notebooklm_bundle, "_PROCESSED_DIR", tmp_path),
+        patch.object(build_notebooklm_bundle, "_MODELS_DIR", tmp_path),
+        patch.object(build_notebooklm_bundle, "_download_sec_filing", _no_op),
+        patch.object(build_notebooklm_bundle, "_generate_test_report", _no_op_path),
+        patch.object(build_notebooklm_bundle, "_generate_eval_report", _no_op_path),
+    ):
+        written = build_notebooklm_bundle.build(ticker="TEST")
+
+    sample_dest = bundle_dir / "07_exec_commentary_SAMPLE.md"
+    live_dest = bundle_dir / "07_exec_commentary.md"
+    assert sample_dest.exists(), "Sample commentary should be written under SAMPLE filename"
+    assert not live_dest.exists(), "Stale 07_exec_commentary.md was not cleaned up"
+    body = sample_dest.read_text(encoding="utf-8")
+    assert "SAMPLE — illustrative only" in body, "Banner not injected into sample commentary"
+    assert written["07_exec_commentary"] == sample_dest
+
+    readme = (bundle_dir / "README_FOR_NOTEBOOKLM.md").read_text(encoding="utf-8")
+    assert "07_exec_commentary_SAMPLE.md" in readme
+    assert (
+        "live commentary required" in readme.lower()
+    ), "README should suppress the provenance demo prompt for sample commentary"
+
+
 def test_forecast_summary_renders_table_without_tabulate(tmp_path: Path) -> None:
     """05_forecast_summary.md must render a real table, not the tabulate stub.
 

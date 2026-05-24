@@ -8,11 +8,12 @@
 
 ## Suggested Prompts
 
-### Provenance queries (the key demo questions)
-- *For the $X.XB revenue figure in the commentary, what is the source filing?*
-  → NotebookLM should cite the accession_no from 07_exec_commentary.md and
-  trace it to the row in 04_historical_financials.csv with a matching accession_no.
-- *What SEC filing did the Q1 FY2026 revenue figure come from?*
+### Provenance queries (live commentary required)
+_The bundled commentary file is `07_exec_commentary_SAMPLE.md` —
+an illustrative sample. Its accession numbers are NOT guaranteed to
+appear in `04_historical_financials.csv`. To run the provenance demo,
+first generate a live commentary: `make commentary TICKER=PANW LIVE=1`,
+then re-run `make notebooklm` and re-upload the bundle._
 
 ### Financial analysis
 - *Summarize the company's revenue trajectory over the last 3 years.*
@@ -35,11 +36,11 @@
 | 04_historical_financials.csv | Last 12 quarters with accession_no + filing_url |
 | 05_forecast_summary.md | Prophet + AutoARIMA + Lasso outputs with CIs |
 | 06_excel_model_summary.md | Base/Bull/Bear scenario description |
-| 07_exec_commentary.md | LLM-generated variance commentary with citations |
+| 07_exec_commentary_SAMPLE.md | LLM-generated variance commentary with citations (illustrative sample) |
 | 08_test_report.html | pytest coverage report |
 | 09_eval_report.md | Eval harness pass/fail (5 ground-truth scenarios) |
 
 ## Architecture note
 This pipeline follows the reasoning-vs-computation pattern:
-all arithmetic happens in Python/SQL, the LLM generates narrative only. Every
+all arithmetic happens in Python/SQL, Claude generates narrative only. Every
 number in the commentary traces to an SEC accession number.

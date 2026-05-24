@@ -310,6 +310,21 @@ def _find_latest_commentary(ticker: str) -> Path | None:
     return files[0] if files else None
 
 
+def _is_sample_commentary(path: Path) -> bool:
+    """True when the commentary file is the illustrative SAMPLE, not a live run."""
+    return "_SAMPLE" in path.name
+
+
+_SAMPLE_BANNER = (
+    "> ⚠️ **SAMPLE — illustrative only.** This file shows the citation format\n"
+    "> and narrative structure for executive commentary. Accession numbers in\n"
+    "> brackets are illustrative and may NOT appear in `04_historical_financials.csv`.\n"
+    "> To generate a live commentary tied to real EDGAR data for the current\n"
+    "> period, run `make commentary TICKER=<ticker> LIVE=1` and re-run\n"
+    "> `make notebooklm`. Do not use this file for provenance demos.\n\n"
+)
+
+
 # ── File 08: Test report ──────────────────────────────────────────────────────
 
 
@@ -489,15 +504,37 @@ def _download_sec_filing(cik_int: int, form_type: str, dest: Path) -> bool:
 # ── README for NotebookLM ─────────────────────────────────────────────────────
 
 
-def _build_notebooklm_readme(ticker: str) -> str:
+def _build_notebooklm_readme(ticker: str, is_sample: bool = False) -> str:
     """Build the README_FOR_NOTEBOOKLM.md with suggested prompts.
 
     Args:
         ticker: Company ticker symbol.
+        is_sample: True when the bundled commentary is the illustrative SAMPLE.
+            The provenance demo prompt is suppressed in that case so reviewers
+            don't ask NotebookLM to trace fake accessions to the warehouse.
 
     Returns:
         Markdown string for README_FOR_NOTEBOOKLM.md.
     """
+    commentary_filename = "07_exec_commentary_SAMPLE.md" if is_sample else "07_exec_commentary.md"
+    commentary_suffix = " (illustrative sample)" if is_sample else ""
+    if is_sample:
+        provenance_section = (
+            "### Provenance queries (live commentary required)\n"
+            f"_The bundled commentary file is `{commentary_filename}` —\n"
+            "an illustrative sample. Its accession numbers are NOT guaranteed to\n"
+            "appear in `04_historical_financials.csv`. To run the provenance demo,\n"
+            f"first generate a live commentary: `make commentary TICKER={ticker} LIVE=1`,\n"
+            "then re-run `make notebooklm` and re-upload the bundle._\n"
+        )
+    else:
+        provenance_section = (
+            "### Provenance queries (the key demo questions)\n"
+            "- *For the $X.XB revenue figure in the commentary, what is the source filing?*\n"
+            f"  → NotebookLM should cite the accession_no from {commentary_filename} and\n"
+            "  trace it to the row in 04_historical_financials.csv with a matching accession_no.\n"
+            "- *What SEC filing did the Q1 FY2026 revenue figure come from?*\n"
+        )
     return f"""# How to Use This Bundle in NotebookLM
 
 ## Setup
@@ -508,12 +545,7 @@ def _build_notebooklm_readme(ticker: str) -> str:
 
 ## Suggested Prompts
 
-### Provenance queries (the key demo questions)
-- *For the $X.XB revenue figure in the commentary, what is the source filing?*
-  → NotebookLM should cite the accession_no from 07_exec_commentary.md and
-  trace it to the row in 04_historical_financials.csv with a matching accession_no.
-- *What SEC filing did the Q1 FY2026 revenue figure come from?*
-
+{provenance_section}
 ### Financial analysis
 - *Summarize the company's revenue trajectory over the last 3 years.*
 - *What are the largest variances between Prophet, AutoARIMA, and Lasso forecasts?*
@@ -535,7 +567,7 @@ def _build_notebooklm_readme(ticker: str) -> str:
 | 04_historical_financials.csv | Last 12 quarters with accession_no + filing_url |
 | 05_forecast_summary.md | Prophet + AutoARIMA + Lasso outputs with CIs |
 | 06_excel_model_summary.md | Base/Bull/Bear scenario description |
-| 07_exec_commentary.md | LLM-generated variance commentary with citations |
+| {commentary_filename} | LLM-generated variance commentary with citations{commentary_suffix} |
 | 08_test_report.html | pytest coverage report |
 | 09_eval_report.md | Eval harness pass/fail (5 ground-truth scenarios) |
 
@@ -641,9 +673,21 @@ def build(ticker: str | None = None) -> dict[str, Path]:
 
     # 07 — Exec commentary (most recent)
     commentary_path = _find_latest_commentary(resolved_ticker)
-    dest = _BUNDLE_DIR / "07_exec_commentary.md"
+    is_sample = bool(commentary_path and _is_sample_commentary(commentary_path))
+    # Bundle filename embeds the SAMPLE marker so NotebookLM (and any reader
+    # listing the folder) can immediately tell illustrative content from a
+    # live, provenance-checked commentary.
+    dest_name = "07_exec_commentary_SAMPLE.md" if is_sample else "07_exec_commentary.md"
+    dest = _BUNDLE_DIR / dest_name
+    # Remove any prior version under the other name so stale files don't linger.
+    other = _BUNDLE_DIR / ("07_exec_commentary.md" if is_sample else "07_exec_commentary_SAMPLE.md")
+    if other.exists():
+        other.unlink()
     if commentary_path and commentary_path.exists():
-        dest.write_text(commentary_path.read_text(encoding="utf-8"), encoding="utf-8")
+        body = commentary_path.read_text(encoding="utf-8")
+        if is_sample:
+            body = _SAMPLE_BANNER + body
+        dest.write_text(body, encoding="utf-8")
         logger.info("Written: %s (from %s)", dest.name, commentary_path.name)
     else:
         dest.write_text(
@@ -668,7 +712,10 @@ def build(ticker: str | None = None) -> dict[str, Path]:
 
     # README
     readme_path = _BUNDLE_DIR / "README_FOR_NOTEBOOKLM.md"
-    readme_path.write_text(_build_notebooklm_readme(resolved_ticker), encoding="utf-8")
+    readme_path.write_text(
+        _build_notebooklm_readme(resolved_ticker, is_sample=is_sample),
+        encoding="utf-8",
+    )
     written["README_FOR_NOTEBOOKLM"] = readme_path
     logger.info("Written: %s", readme_path.name)
 
