@@ -76,16 +76,21 @@ def _build_warehouse_tmp(
 
 
 def test_fiscal_to_calendar_quarter_panw_q1() -> None:
-    """PANW FY ends July (month 7). Q1 starts August → cal Q3."""
+    """PANW FY ends July (month 7). FY2024 Q1 is Aug–Oct 2023 → cal 2023 Q4."""
     cal_year, cal_q = _fiscal_to_calendar_quarter(2024, "Q1", fy_end_month=7)
-    assert cal_q in (3, 4)  # August–October maps to Q3 or Q4
+    assert (cal_year, cal_q) == (2023, 4)
+
+
+def test_fiscal_to_calendar_quarter_panw_q2() -> None:
+    """PANW FY ends July: FY2025 Q2 ends Jan 2025 → cal 2025 Q1."""
+    cal_year, cal_q = _fiscal_to_calendar_quarter(2025, "Q2", fy_end_month=7)
+    assert (cal_year, cal_q) == (2025, 1)
 
 
 def test_fiscal_to_calendar_quarter_q4() -> None:
     """FY ending December: Q4 should be calendar Q4."""
     cal_year, cal_q = _fiscal_to_calendar_quarter(2024, "Q4", fy_end_month=12)
-    assert cal_q == 4
-    assert cal_year == 2024
+    assert (cal_year, cal_q) == (2024, 4)
 
 
 # ── _calendar_to_fiscal_quarter ───────────────────────────────────────────────
@@ -133,34 +138,39 @@ def test_calendar_to_fiscal_quarter_apple_september_fy() -> None:
     )
 
 
-def test_calendar_to_fiscal_quarter_round_trip_calendar_fy() -> None:
-    """Round-trip with the existing fiscal→calendar helper for calendar fy.
+def test_calendar_to_fiscal_quarter_round_trip() -> None:
+    """For every (fy, Qn, fy_end_month), the two helpers must round-trip cleanly.
 
-    For ``fy_end_month=12`` the two helpers must agree: feeding the calendar
-    period_end produced by ``_fiscal_to_calendar_quarter`` back through
-    ``_calendar_to_fiscal_quarter`` reproduces the original (fy, Qn).
+    Constructs the fiscal-quarter-end date deterministically from
+    ``fy_end_month`` and ``Qn`` (Q1 ends 9 months before fy_end, Q4 ends at
+    fy_end), then feeds that ``period_end`` through ``_calendar_to_fiscal_quarter``
+    and asserts we recover the original (fy, Qn).
 
-    Note: ``_fiscal_to_calendar_quarter`` has a separate, pre-existing
-    year-naming inconsistency for fy-spanning fiscal years (e.g. PANW July fy)
-    where the helper returns the calendar year of the fiscal-year *start*
-    rather than the EDGAR convention of fiscal-year *end*. That mismatch is
-    out of scope for this bead — it affects only ``dim_date.csv`` and is
-    tracked separately. We round-trip only on calendar-fy here.
+    Also checks that ``_fiscal_to_calendar_quarter`` returns the calendar
+    quarter that *contains* that fiscal-quarter-end date.
     """
-    cal_quarter_end_month = {1: 3, 2: 6, 3: 9, 4: 12}
-    fy_end_month = 12
-    for fy_in in (2024, 2025):
-        for q_in in ("Q1", "Q2", "Q3", "Q4"):
-            cal_year, cal_q = _fiscal_to_calendar_quarter(fy_in, q_in, fy_end_month)
-            pe = pd.Timestamp(year=cal_year, month=cal_quarter_end_month[cal_q], day=1) + (
-                pd.offsets.MonthEnd(0)
-            )
-            fy_out, q_out = _calendar_to_fiscal_quarter(pe, fy_end_month)
-            assert (fy_out, q_out) == (fy_in, q_in), (
-                f"round-trip failed: fy_end_month={fy_end_month} "
-                f"fy={fy_in} q={q_in} → cal=({cal_year},{cal_q}) → pe={pe.date()} "
-                f"→ ({fy_out},{q_out})"
-            )
+    for fy_end_month in (3, 7, 9, 12):
+        for fy_in in (2024, 2025):
+            for q_in in ("Q1", "Q2", "Q3", "Q4"):
+                quarter_num = int(q_in[1])
+                end_month_raw = fy_end_month + (quarter_num - 4) * 3
+                end_year = fy_in if end_month_raw > 0 else fy_in - 1
+                end_month = ((end_month_raw - 1) % 12) + 1
+                pe = pd.Timestamp(year=end_year, month=end_month, day=1) + pd.offsets.MonthEnd(0)
+
+                fy_out, q_out = _calendar_to_fiscal_quarter(pe, fy_end_month)
+                assert (fy_out, q_out) == (fy_in, q_in), (
+                    f"round-trip failed: fy_end_month={fy_end_month} "
+                    f"fy={fy_in} q={q_in} → pe={pe.date()} → ({fy_out},{q_out})"
+                )
+
+                cal_year, cal_q = _fiscal_to_calendar_quarter(fy_in, q_in, fy_end_month)
+                expected_cal_q = (end_month - 1) // 3 + 1
+                assert (cal_year, cal_q) == (end_year, expected_cal_q), (
+                    f"_fiscal_to_calendar_quarter mismatch: fy_end_month={fy_end_month} "
+                    f"fy={fy_in} q={q_in} → got ({cal_year},{cal_q}), "
+                    f"expected ({end_year},{expected_cal_q})"
+                )
 
 
 # ── _export_dim_metric ────────────────────────────────────────────────────────

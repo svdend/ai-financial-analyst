@@ -181,28 +181,26 @@ def _fiscal_to_calendar_quarter(
 ) -> tuple[int, int]:
     """Map fiscal quarter to (calendar_year, calendar_quarter).
 
+    Uses the EDGAR convention that ``fiscal_year`` is named for the calendar
+    year in which the fiscal year ends (PANW Aug2024–Jul2025 = FY2025). The
+    returned calendar tuple corresponds to the *quarter-end* — i.e. for
+    PANW FY2025 Q1 (Aug–Oct 2024) this returns ``(2024, 4)``.
+
     Args:
         fiscal_year:    EDGAR fiscal year (e.g. 2024).
         fiscal_period:  EDGAR fiscal period string (e.g. 'Q1', 'Q4').
         fy_end_month:   Month in which the fiscal year ends (1–12).
 
     Returns:
-        (calendar_year, calendar_quarter) tuple.
+        (calendar_year, calendar_quarter) tuple corresponding to the
+        calendar quarter that contains the fiscal quarter's *end* date.
     """
     quarter_num = int(fiscal_period[-1]) if fiscal_period.startswith("Q") else 0
-    if quarter_num == 0:
-        return fiscal_year, 4
-
-    # Offset Q1 start from FY start month
-    fy_start_month = (fy_end_month % 12) + 1
-    cal_month = (fy_start_month + (quarter_num - 1) * 3 - 1) % 12 + 1
-    cal_year = fiscal_year
-    # If the quarter start crosses a calendar year boundary
-    raw_month = fy_start_month + (quarter_num - 1) * 3
-    if raw_month > 12:
-        cal_year += raw_month // 13
-    cal_quarter = (cal_month - 1) // 3 + 1
-    return cal_year, cal_quarter
+    end_month_raw = fy_end_month if quarter_num == 0 else fy_end_month + (quarter_num - 4) * 3
+    end_year = fiscal_year if end_month_raw > 0 else fiscal_year - 1
+    end_month = ((end_month_raw - 1) % 12) + 1
+    cal_quarter = (end_month - 1) // 3 + 1
+    return end_year, cal_quarter
 
 
 def _calendar_to_fiscal_quarter(
