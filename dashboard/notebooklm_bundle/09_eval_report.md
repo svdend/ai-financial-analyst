@@ -25,6 +25,6 @@ tests/eval/test_eval_pipeline.py::test_mix_no_refusal PASSED             [ 88%]
 tests/eval/test_eval_pipeline.py::test_restatement_pipeline_refuses PASSED [ 94%]
 tests/eval/test_eval_pipeline.py::test_restatement_never_calls_api PASSED [100%]
 
-============================== 18 passed in 0.35s ==============================
+============================== 18 passed in 0.19s ==============================
 
 ```
