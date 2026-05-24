@@ -231,7 +231,7 @@ def _build_excel_model_summary(ticker: str) -> str:
     Returns:
         Markdown string for 06_excel_model_summary.md.
     """
-    excel_path = _DASHBOARD_DIR / f"{ticker}_model.xlsx"
+    excel_path = _DASHBOARD_DIR / f"{ticker}_3Statement_Model.xlsx"
     lines = [
         f"# {ticker} Excel Model Summary — Base / Bull / Bear",
         "",
@@ -448,6 +448,12 @@ def _download_sec_filing(cik_int: int, form_type: str, dest: Path) -> bool:
         resp.raise_for_status()
         dest.write_bytes(resp.content)
         logger.info("Downloaded %s → %s (%d bytes)", form_type, dest.name, len(resp.content))
+        # Remove any stale .txt placeholder from a prior non-PDF run; NotebookLM
+        # would otherwise ingest both and cite the placeholder alongside the real PDF.
+        sibling_txt = dest.with_suffix(".txt")
+        if sibling_txt.exists():
+            sibling_txt.unlink()
+            logger.info("Removed stale placeholder: %s", sibling_txt.name)
         return True
     except Exception as exc:
         logger.warning("Could not download %s PDF: %s", form_type, exc)
