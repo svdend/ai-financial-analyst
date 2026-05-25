@@ -212,20 +212,128 @@ is wired up.
 Provenance: each margin mark traces to two accessions (numerator + denominator).
 The tooltip should list both — same template as Sheet 2.
 
+### Sheet 7: Revenue & Forecast Overlay
+
+Actuals + 3-model forecast fan from `fact_forecasts.csv`. Lets the reviewer
+see the *range* of plausible outcomes, not a false-precision point estimate.
+
+**Critical scope:** cap the forecast horizon at the next **4 quarters**.
+With ~20 historical observations per company, the 95% PI on quarter 5+ is
+wide enough to be meaningless (e.g. `$3.4B–$9.1B` for FY2027). Filter
+`fact_forecasts.period_end` to the first 4 forecast points.
+
+- Columns: `period_end` (continuous, quarterly)
+- Rows: `[value]` from `fact_financials` (Revenue), and `yhat` / band fields
+  from `fact_forecasts`
+- Marks:
+  - Actuals: solid line, `#1f4e79`
+  - `yhat` per model: dashed line, one colour per model (Prophet `#5b8def`,
+    AutoARIMA `#a169b8`, Lasso `#e07b00`)
+  - 80% PI band: shaded area between `yhat_lower_80` and `yhat_upper_80`,
+    20% opacity, model colour
+  - 95% PI band: shaded area between `yhat_lower_95` and `yhat_upper_95`,
+    10% opacity, same colour (gives the layered fan look)
+- Format: `$#,##0,,.0 "B"` (billions)
+- Add a **parameter** `[Selected Model]` with allowable values
+  `Prophet | AutoARIMA | Lasso | All`; filter the forecast layer to match
+- **Provenance note in the tooltip**: forecasts are *not* SEC-sourced —
+  show "Forecast: <model>, generated YYYY-MM-DD, 95% PI [low, high]" and
+  do **not** wire a sec.gov URL action on forecast marks (only on actuals)
+
+### Sheet 8: DSO (Days Sales Outstanding)
+
+Working-capital efficiency: `DSO = AccountsReceivable / Revenue × 91`.
+Rising DSO = customers paying slower (collections risk); falling DSO =
+collections improving. Standard B2B SaaS diligence chart.
+
+- Columns: `period_end` (continuous, quarterly)
+- Rows: `[DSO]` (calc field below)
+- Marks: Bar + an 8-quarter rolling average overlay line
+- Format: `#0` with " d" suffix (e.g. `78 d`)
+- Reference line: 75 days (industry median for enterprise security
+  software), dashed grey
+
+```
+DSO = SUM(IF [line_item]='AccountsReceivable' THEN [value] END)
+    / SUM(IF [line_item]='Revenue'             THEN [value] END)
+    * 91
+DSO 8Q Rolling Avg = WINDOW_AVG([DSO], -7, 0)
+```
+
+Provenance: two-source (AR + Revenue accessions, same quarter).
+
+### Sheet 9: Deferred Revenue / Billings Proxy
+
+Forward-revenue visibility — until real RPO ingests (bead `zh9`), the QoQ
+change in deferred revenue is the standard analyst proxy for billings.
+
+- Columns: `period_end` (continuous, quarterly)
+- Rows (dual axis):
+  - Bar: `[Billings Proxy]` (QoQ change in DefRev) — `$M`
+  - Line: `[DefRev / Revenue]` (forward-cover ratio) — `%`
+- Format bar: `$#,##0,.0 "M"`; format line axis: `#0.0%`
+
+```
+DefRev (Latest)    = SUM(IF [line_item]='DeferredRevenue' THEN [value] END)
+Billings Proxy     = [DefRev (Latest)] - LOOKUP([DefRev (Latest)], -1)
+DefRev / Revenue   = [DefRev (Latest)]
+                   / SUM(IF [line_item]='Revenue' THEN [value] END)
+```
+
+Caption to add on the sheet: "Billings proxy = ΔDeferredRevenue (current).
+Approximation only — true billings = revenue + ΔDefRev. Replace with RPO
+when available."
+
+### Sheet 10: Rule of 40 Quadrant
+
+The standard SaaS quality scatter. X = YoY revenue growth %, Y = TTM FCF
+margin %. The 40% diagonal is the durable-SaaS threshold; above-and-right
+of it = healthy; below-and-left = at-risk.
+
+- Columns: `[YoY Revenue Growth]` (continuous, %)
+- Rows: `[TTM FCF Margin %]` (continuous, %)
+- Marks: Circle, one mark per quarter
+  - Colour: `fiscal_year` (sequential palette — older years lighter, newer darker)
+  - Detail: `period_end` (one mark per quarter)
+  - Size: small (8 px); ~20 quarters total
+- Add a **trail line** (Path → period_end ascending) so the time order is
+  visible — Tableau's "trail" mark or a connected line via `period_end` on Path
+- **Reference line**: the 40% diagonal — add a calc field `[40 Line] = 0.40 - [YoY Revenue Growth]` and plot as a reference band, *or* draw a manual annotation line through `(0%, 40%)` and `(40%, 0%)`
+- **Annotate** the most recent quarter with its label (e.g. `FY2026 Q2`) and the Rule-of-40 score
+- Format axes: `#0.0%`
+
+Provenance: each dot traces to *4* filings (TTM aggregates) — list the
+range `MIN(filed_date) … MAX(filed_date)` in the tooltip; URL action fires
+on the latest quarter's accession.
+
+### Sheet 11: Forecast vs Actuals Scorecard
+
+Honest model accountability. For the most-recent realised quarter, show:
+prior forecast point estimate (per model) vs the actual that landed.
+Surfaces "did this model beat or miss?" without spin.
+
+- One small table, four rows (Actual, Prophet, AutoARIMA, Lasso), three columns:
+  Quarter, Forecast / Actual, Δ vs Actual %
+- Pull the actual from `fact_financials`; pull the forecast from
+  `fact_forecasts` filtered to the same `period_end`
+- Format Δ: `+0.0%;-0.0%`, green if `|Δ| < 5%`, amber 5–10%, red >10%
+- Caption: "Forecasts generated YYYY-MM-DD, before this quarter's filing.
+  No data leakage."
+
+This sheet is small but is the **senior signal** — it forces the model to
+be wrong in public, in a falsifiable way.
+
 ### Future work (v2 — not yet published)
 
-The pipeline already produces `fact_forecasts.csv` and `v_variance_facts`,
-but the following four sheets have not been built into the published
-workbook. They are tracked as v2 dashboard work:
+The pipeline already produces `fact_forecasts.csv` and `v_variance_facts`.
+Sheet 7 + Sheet 11 land the forecast overlay and accountability scorecard;
+the following remain v2:
 
-- **Actual vs Forecast** — dual-axis line: actuals from `fact_financials` +
-  forecast bands (80% / 95% CIs) from `fact_forecasts`, three-model ensemble
-  (Prophet / AutoARIMA / Lasso).
 - **Variance Drivers** — bar chart of `revenue_variance_vs_forecast` per
   quarter, coloured by driver type (volume / margin / mix / one-time) from
   `v_variance_facts`.
-- **Forecast Accuracy** — MAE and MAPE per expanding-window CV fold,
-  grouped by model, with a 10% MAPE reference line.
+- **Forecast Accuracy (CV folds)** — MAE and MAPE per expanding-window CV
+  fold, grouped by model, with a 10% MAPE reference line.
 - **Scenario Toggle** — parameter-driven Base / Bull / Bear filter on
   `fact_forecasts`, showing revenue forecast with CI bands.
 
@@ -298,7 +406,7 @@ away from its source SEC filing.
 
 ---
 
-## 6b. Dashboard Layout (Day 2 target)
+## 6b. Dashboard Layout (Day 3 target — adds Forecast / Working-Capital / Rule of 40)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -307,15 +415,22 @@ away from its source SEC filing.
 │ Sheet 4 (KPI strip — 7 BAN tiles, equal width):                             │
 │ TTM Rev │ TTM OI │ TTM FCF│ FCF M %│  Cash  │ YoY Rev│  Rule of 40           │
 ├────────┴────────┴────────┴────────┴────────┴────────┴─────────────────────────┤
-│ Sheet 1 — Revenue Actuals     │  Sheet 6 — Profitability Stack (Gross/Op/FCF)│
+│ Sheet 7 — Revenue & Forecast Overlay (capped 4Q out)  │ Sheet 11 — Forecast  │
+│                                                       │ vs Actuals scorecard │
+├───────────────────────────────┬──────────────────────────────────────────────┤
+│ Sheet 6 — Profitability Stack │  Sheet 5 — FCF Cash Flow Bridge              │
 ├───────────────────────────────┼──────────────────────────────────────────────┤
-│ Sheet 3 — YoY Revenue Growth  │  Sheet 5 — FCF Cash Flow Bridge              │
+│ Sheet 8 — DSO                 │  Sheet 9 — Deferred Revenue / Billings Proxy │
 ├───────────────────────────────┴──────────────────────────────────────────────┤
+│ Sheet 10 — Rule of 40 Quadrant (full width)                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
 │ Footer: warning + "Source: SEC EDGAR · model snapshot YYYY-MM-DD · CC0"      │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Drop Sheet 2 once Sheet 6 is wired in (Sheet 6 is the strict superset).
+Drop Sheets 1 and 3 from the dashboard once Sheet 7 (which carries actuals
+inline) and Sheet 4's BAN tiles cover their content. Drop Sheet 2 once
+Sheet 6 is in (already noted in §Sheet 6).
 
 ---
 
