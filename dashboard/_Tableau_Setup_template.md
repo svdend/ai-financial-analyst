@@ -8,7 +8,7 @@
 
 ## 1. File Overview
 
-The `/dashboard/tableau_data/` folder contains five files:
+The `/dashboard/tableau_data/` folder contains five CSVs plus a Hyper extract:
 
 | File | Description |
 |---|---|
@@ -17,6 +17,7 @@ The `/dashboard/tableau_data/` folder contains five files:
 | `dim_date.csv` | Date dimension: fiscal year/quarter + calendar year/quarter |
 | `dim_metric.csv` | Metric metadata: label, category, unit |
 | `dim_filing.csv` | One row per `accession_no` with `filing_url`, `form_type`, `filed_date` |
+| `{ticker}_financials.hyper` | Pre-built Tableau extract over `fact_financials` only (convenience; see §3) |
 
 ---
 
