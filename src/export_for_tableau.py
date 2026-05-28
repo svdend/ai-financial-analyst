@@ -286,6 +286,15 @@ def _cash_flow_ytd_to_standalone(df: pd.DataFrame) -> pd.DataFrame:
     enough there. For cash-flow duration metrics, explicitly difference each
     non-quarter-framed Q2/Q3/Q4 row against the previous fiscal quarter's raw
     cumulative value. Q1 remains unchanged because YTD equals standalone.
+
+    Implementation is a self-merge on ``(ticker, line_item, fiscal_year, q-1)``:
+    the prior-quarter raw value is attached as a vectorized ``_prev_raw`` column,
+    and the new ``value`` is computed in a single ``out.loc[mask, "value"] = ...``
+    assignment. Duplicate ``(group, quarter)`` rows are collapsed by
+    ``groupby().max()`` for the baseline lookup, which is deterministic and
+    sign-preserving (the upstream dedup pipeline normally strips duplicates
+    before this function sees them; this branch only fires on synthetic or
+    pathological inputs and emits a warning).
     """
     if df.empty:
         return df
@@ -296,48 +305,75 @@ def _cash_flow_ytd_to_standalone(df: pd.DataFrame) -> pd.DataFrame:
     )
     quarter_num = out["fiscal_period"].astype(str).str.extract(r"Q([1-4])", expand=False)
     out["_quarter_num"] = pd.to_numeric(quarter_num, errors="coerce")
-    out["_is_quarter_framed"] = frame_col.fillna("").str.match(_QUARTER_FRAME_RE)
+    out["_is_quarter_framed"] = frame_col.fillna("").str.match(_QUARTER_FRAME_RE).fillna(False)
     out["_raw_value"] = out["value"]
 
-    mask = (
+    cumulative_mask = (
         out["line_item"].isin(_CUMULATIVE_CASH_FLOW_ITEMS)
         & out["period_type"].eq("Q")
         & out["_quarter_num"].notna()
     )
+    if not cumulative_mask.any():
+        return out.drop(columns=["_quarter_num", "_is_quarter_framed", "_raw_value"])
 
-    for (_ticker, _line_item, _fiscal_year), group in out[mask].groupby(
+    cumulative = out.loc[cumulative_mask]
+    group_keys = ["ticker", "line_item", "fiscal_year", "_quarter_num"]
+
+    duplicates = (
+        cumulative.loc[cumulative.duplicated(subset=group_keys, keep=False), group_keys]
+        .drop_duplicates()
+        .sort_values(group_keys)
+    )
+    for (_ticker, line_item, fiscal_year), grp in duplicates.groupby(
         ["ticker", "line_item", "fiscal_year"], sort=False
     ):
-        quarter_counts = group["_quarter_num"].value_counts()
-        duplicate_quarters = sorted(int(q) for q, count in quarter_counts.items() if count > 1)
-        if duplicate_quarters:
-            logger.warning(
-                "  %s FY%s: duplicate cash-flow fiscal quarters in Tableau export: %s",
-                _line_item,
-                _fiscal_year,
-                ", ".join(f"Q{q}" for q in duplicate_quarters),
-            )
-        raw_by_q = {
-            int(row["_quarter_num"]): row["_raw_value"]
-            for _, row in group.sort_values("_quarter_num").iterrows()
-        }
-        for idx, row in group.iterrows():
-            q_num = int(row["_quarter_num"])
-            if q_num <= 1 or bool(row["_is_quarter_framed"]):
-                continue
-            prev_raw = raw_by_q.get(q_num - 1)
-            if pd.notna(prev_raw):
-                out.at[idx, "value"] = row["_raw_value"] - prev_raw
-            else:
-                logger.warning(
-                    "  %s FY%s Q%d: cannot convert cumulative cash-flow row to standalone; "
-                    "missing prior quarter baseline",
-                    row["line_item"],
-                    row["fiscal_year"],
-                    q_num,
-                )
+        quarters = ", ".join(f"Q{int(q)}" for q in grp["_quarter_num"].tolist())
+        logger.warning(
+            "  %s FY%s: duplicate cash-flow fiscal quarters in Tableau export: %s",
+            line_item,
+            fiscal_year,
+            quarters,
+        )
 
-    return out.drop(columns=["_quarter_num", "_is_quarter_framed", "_raw_value"])
+    baseline = (
+        cumulative.groupby(group_keys, sort=False)["_raw_value"]
+        .max()
+        .rename("_prev_raw")
+        .reset_index()
+        .rename(columns={"_quarter_num": "_baseline_q"})
+    )
+    out["_baseline_q"] = out["_quarter_num"] - 1
+    out = out.merge(
+        baseline,
+        on=["ticker", "line_item", "fiscal_year", "_baseline_q"],
+        how="left",
+    )
+
+    update_mask = (
+        out["line_item"].isin(_CUMULATIVE_CASH_FLOW_ITEMS)
+        & out["period_type"].eq("Q")
+        & out["_quarter_num"].notna()
+        & (out["_quarter_num"] > 1)
+        & (~out["_is_quarter_framed"].astype(bool))
+    )
+    has_baseline = update_mask & out["_prev_raw"].notna()
+    out.loc[has_baseline, "value"] = (
+        out.loc[has_baseline, "_raw_value"] - out.loc[has_baseline, "_prev_raw"]
+    )
+
+    missing = out.loc[update_mask & out["_prev_raw"].isna(), ["line_item", "fiscal_year", "_quarter_num"]]
+    for _, row in missing.iterrows():
+        logger.warning(
+            "  %s FY%s Q%d: cannot convert cumulative cash-flow row to standalone; "
+            "missing prior quarter baseline",
+            row["line_item"],
+            row["fiscal_year"],
+            int(row["_quarter_num"]),
+        )
+
+    return out.drop(
+        columns=["_quarter_num", "_is_quarter_framed", "_raw_value", "_baseline_q", "_prev_raw"]
+    )
 
 
 # ── Export functions ───────────────────────────────────────────────────────────
