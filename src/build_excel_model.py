@@ -1357,7 +1357,7 @@ def build(ticker: str | None = None, db_path: Path | None = None) -> Path:
     # that produced the cell values.
     for scenario_name, fcst in [("Base", fcst_base), ("Bull", fcst_bull), ("Bear", fcst_bear)]:
         max_bc = max(abs(p.get("BalanceCheck", 0.0)) for p in fcst)
-        logger.info("%s max |BalanceCheck| = $%,.0f", scenario_name, max_bc)
+        logger.info("%s max |BalanceCheck| = $%s", scenario_name, f"{max_bc:,.0f}")
         if max_bc > _BALANCE_CHECK_TOL:
             raise RuntimeError(
                 f"{scenario_name} scenario: max |BalanceCheck| = ${max_bc:,.0f} "
@@ -1366,12 +1366,12 @@ def build(ticker: str | None = None, db_path: Path | None = None) -> Path:
 
     # ── GAAP OCF residual check ────────────────────────────────────────────────
     ocf_residual = _verify_ocf_residual(hist_is, hist_bs, hist_cf, has_inv)
-    logger.info("GAAP OCF residual (last 4Q): $%,.0f  (tolerance $5M)", ocf_residual)
+    logger.info("GAAP OCF residual (last 4Q): $%s  (tolerance $5M)", f"{ocf_residual:,.0f}")
     if ocf_residual > _OCF_RESIDUAL_TOL:
         logger.warning(
-            "GAAP OCF residual $%,.0f exceeds $5M — WC model may be incomplete. "
+            "GAAP OCF residual $%s exceeds $5M — WC model may be incomplete. "
             "Deferred-revenue or tax-timing items not captured.",
-            ocf_residual,
+            f"{ocf_residual:,.0f}",
         )
 
     # ── Sources sheet presence check ──────────────────────────────────────────

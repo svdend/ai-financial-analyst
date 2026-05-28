@@ -13,11 +13,13 @@ from typing import Any
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 import yaml
 
 from src.build_warehouse import build as build_warehouse
 from src.export_for_tableau import (
     _calendar_to_fiscal_quarter,
+    _cash_flow_ytd_to_standalone,
     _export_dim_filing,
     _export_dim_metric,
     _export_fact_financials,
@@ -195,6 +197,19 @@ def test_dim_metric_no_duplicate_line_items() -> None:
     assert df["line_item"].nunique() == len(df)
 
 
+def test_dim_metric_covers_exported_actual_line_items() -> None:
+    """Metadata should exist for every actual line item the exporter emits."""
+    df = _export_dim_metric()
+    expected = {
+        "ResearchAndDevelopment",
+        "InvestingCashFlow",
+        "FinancingCashFlow",
+        "Depreciation",
+        "TreasuryStockRepurchases",
+    }
+    assert expected <= set(df["line_item"])
+
+
 # ── _export_dim_filing ────────────────────────────────────────────────────────
 
 
@@ -311,7 +326,7 @@ def test_fact_financials_no_ytd_duplicates(tmp_path: Path) -> None:
 
     SEC XBRL filings report both 3-month standalone and YTD cumulative values
     for the same concept and period_end.  The export must deduplicate these,
-    keeping only the standalone quarterly value (minimum absolute value).
+    keeping quarter-framed standalone values when present.
     """
     db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
     import duckdb
@@ -692,6 +707,603 @@ def test_fact_financials_ytd_tie_negative_standalone(tmp_path: Path) -> None:
         f"line items.  Frame priority must pick the quarter-framed row.\n{op.to_string()}"
     )
     assert op.iloc[0]["fact_id"] == "fact-standalone-loss"
+
+
+def test_fact_financials_differences_ytd_cash_flow_rows(tmp_path: Path) -> None:
+    """Cash-flow Q2/Q3 rows without quarter frames are YTD and must be differenced.
+
+    PANW-like 10-Q cash-flow statements usually expose Q2 and Q3 OCF/CapEx as
+    fiscal-year-to-date values only.  Tableau margins divide by standalone
+    quarterly Revenue, so the export must convert those cumulative rows to
+    standalone quarter values before publishing.
+    """
+    import duckdb
+
+    from src.build_warehouse import _SQL_CANONICAL
+
+    db_path = tmp_path / "synthetic_cash_flow_ytd.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("""
+            CREATE TABLE raw_financials (
+                ticker        VARCHAR,
+                line_item     VARCHAR,
+                concept_used  VARCHAR,
+                period_end    DATE,
+                period_type   VARCHAR,
+                fiscal_year   INTEGER,
+                fiscal_period VARCHAR,
+                value         DOUBLE,
+                unit          VARCHAR,
+                accession_no  VARCHAR,
+                fact_id       VARCHAR,
+                filing_url    VARCHAR,
+                form_type     VARCHAR,
+                filed_date    DATE,
+                frame         VARCHAR
+            )
+        """)
+        rows = [
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2024-10-31",
+                "Q",
+                2025,
+                "Q1",
+                100.0,
+                "USD",
+                "0000000000-25-000001",
+                "ocf-q1",
+                "https://example/q1",
+                "10-Q",
+                "2024-11-20",
+                "CY2024Q3",
+            ),
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2025-01-31",
+                "Q",
+                2025,
+                "Q2",
+                260.0,
+                "USD",
+                "0000000000-25-000002",
+                "ocf-h1-ytd",
+                "https://example/q2",
+                "10-Q",
+                "2025-02-20",
+                "",
+            ),
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2025-04-30",
+                "Q",
+                2025,
+                "Q3",
+                450.0,
+                "USD",
+                "0000000000-25-000003",
+                "ocf-9m-ytd",
+                "https://example/q3",
+                "10-Q",
+                "2025-05-20",
+                "",
+            ),
+            (
+                "TEST",
+                "CapEx",
+                "PaymentsToAcquireProductiveAssets",
+                "2024-10-31",
+                "Q",
+                2025,
+                "Q1",
+                10.0,
+                "USD",
+                "0000000000-25-000001",
+                "capex-q1",
+                "https://example/q1",
+                "10-Q",
+                "2024-11-20",
+                "CY2024Q3",
+            ),
+            (
+                "TEST",
+                "CapEx",
+                "PaymentsToAcquireProductiveAssets",
+                "2025-01-31",
+                "Q",
+                2025,
+                "Q2",
+                35.0,
+                "USD",
+                "0000000000-25-000002",
+                "capex-h1-ytd",
+                "https://example/q2",
+                "10-Q",
+                "2025-02-20",
+                "",
+            ),
+            (
+                "TEST",
+                "CapEx",
+                "PaymentsToAcquireProductiveAssets",
+                "2025-04-30",
+                "Q",
+                2025,
+                "Q3",
+                70.0,
+                "USD",
+                "0000000000-25-000003",
+                "capex-9m-ytd",
+                "https://example/q3",
+                "10-Q",
+                "2025-05-20",
+                "",
+            ),
+        ]
+        con.executemany(
+            "INSERT INTO raw_financials VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        con.execute(_SQL_CANONICAL)
+
+        df = _export_fact_financials(con, fy_end_month=7)
+    finally:
+        con.close()
+
+    values = {
+        (row["line_item"], str(pd.to_datetime(row["period_end"]).date())): row["value"]
+        for _, row in df.iterrows()
+    }
+    assert values[("OperatingCashFlow", "2024-10-31")] == 100.0
+    assert values[("OperatingCashFlow", "2025-01-31")] == 160.0
+    assert values[("OperatingCashFlow", "2025-04-30")] == 190.0
+    assert values[("CapEx", "2024-10-31")] == 10.0
+    assert values[("CapEx", "2025-01-31")] == 25.0
+    assert values[("CapEx", "2025-04-30")] == 35.0
+
+
+def test_fact_financials_keeps_quarter_framed_cash_flow_rows(tmp_path: Path) -> None:
+    """Quarter-framed cash-flow rows are already standalone and must not be differenced."""
+    import duckdb
+
+    from src.build_warehouse import _SQL_CANONICAL
+
+    db_path = tmp_path / "synthetic_cash_flow_standalone.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("""
+            CREATE TABLE raw_financials (
+                ticker        VARCHAR,
+                line_item     VARCHAR,
+                concept_used  VARCHAR,
+                period_end    DATE,
+                period_type   VARCHAR,
+                fiscal_year   INTEGER,
+                fiscal_period VARCHAR,
+                value         DOUBLE,
+                unit          VARCHAR,
+                accession_no  VARCHAR,
+                fact_id       VARCHAR,
+                filing_url    VARCHAR,
+                form_type     VARCHAR,
+                filed_date    DATE,
+                frame         VARCHAR
+            )
+        """)
+        rows = [
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2024-10-31",
+                "Q",
+                2025,
+                "Q1",
+                100.0,
+                "USD",
+                "0000000000-25-000001",
+                "ocf-q1",
+                "https://example/q1",
+                "10-Q",
+                "2024-11-20",
+                "CY2024Q3",
+            ),
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2025-01-31",
+                "Q",
+                2025,
+                "Q2",
+                160.0,
+                "USD",
+                "0000000000-25-000002",
+                "ocf-q2-standalone",
+                "https://example/q2",
+                "10-Q",
+                "2025-02-20",
+                "CY2024Q4",
+            ),
+        ]
+        con.executemany(
+            "INSERT INTO raw_financials VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        con.execute(_SQL_CANONICAL)
+
+        df = _export_fact_financials(con, fy_end_month=7)
+    finally:
+        con.close()
+
+    q2 = df[
+        (df["line_item"] == "OperatingCashFlow")
+        & (pd.to_datetime(df["period_end"]).dt.date.astype(str) == "2025-01-31")
+    ]
+    assert len(q2) == 1
+    assert q2.iloc[0]["value"] == 160.0
+
+
+def test_fact_financials_warns_when_cash_flow_baseline_missing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A cumulative Q3 cash-flow row without Q2 should not be silently published."""
+    import duckdb
+
+    from src.build_warehouse import _SQL_CANONICAL
+
+    db_path = tmp_path / "synthetic_cash_flow_missing_baseline.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("""
+            CREATE TABLE raw_financials (
+                ticker        VARCHAR,
+                line_item     VARCHAR,
+                concept_used  VARCHAR,
+                period_end    DATE,
+                period_type   VARCHAR,
+                fiscal_year   INTEGER,
+                fiscal_period VARCHAR,
+                value         DOUBLE,
+                unit          VARCHAR,
+                accession_no  VARCHAR,
+                fact_id       VARCHAR,
+                filing_url    VARCHAR,
+                form_type     VARCHAR,
+                filed_date    DATE,
+                frame         VARCHAR
+            )
+        """)
+        rows = [
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2025-04-30",
+                "Q",
+                2025,
+                "Q3",
+                450.0,
+                "USD",
+                "0000000000-25-000003",
+                "ocf-9m-ytd",
+                "https://example/q3",
+                "10-Q",
+                "2025-05-20",
+                "",
+            )
+        ]
+        con.executemany(
+            "INSERT INTO raw_financials VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        con.execute(_SQL_CANONICAL)
+
+        df = _export_fact_financials(con, fy_end_month=7)
+    finally:
+        con.close()
+
+    q3 = df[(df["line_item"] == "OperatingCashFlow") & (df["fiscal_period"] == "Q3")]
+    assert q3.iloc[0]["value"] == 450.0
+    assert "missing prior quarter baseline" in caplog.text
+
+
+def test_fact_financials_cash_flow_differences_within_each_fiscal_year(
+    tmp_path: Path,
+) -> None:
+    """Cumulative cash-flow rows must be differenced within each fiscal year only.
+
+    PANW-style ``fy_end_month=7``: a single calendar year contains rows from two
+    different fiscal years (FY2025 Q3 with period_end 2025-04-30 and FY2026 Q1
+    with period_end 2025-10-31). Differencing must NOT cross fiscal-year groups
+    — FY2026 Q1 is its own standalone-equals-YTD value, not the YTD-minus-prior
+    of FY2025 Q3.
+    """
+    import duckdb
+
+    from src.build_warehouse import _SQL_CANONICAL
+
+    db_path = tmp_path / "synthetic_cash_flow_cross_fy.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("""
+            CREATE TABLE raw_financials (
+                ticker        VARCHAR,
+                line_item     VARCHAR,
+                concept_used  VARCHAR,
+                period_end    DATE,
+                period_type   VARCHAR,
+                fiscal_year   INTEGER,
+                fiscal_period VARCHAR,
+                value         DOUBLE,
+                unit          VARCHAR,
+                accession_no  VARCHAR,
+                fact_id       VARCHAR,
+                filing_url    VARCHAR,
+                form_type     VARCHAR,
+                filed_date    DATE,
+                frame         VARCHAR
+            )
+        """)
+        rows = [
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2024-10-31",
+                "Q",
+                2025,
+                "Q1",
+                100.0,
+                "USD",
+                "0000000000-25-000001",
+                "ocf-fy25-q1",
+                "https://example/fy25-q1",
+                "10-Q",
+                "2024-11-20",
+                "",
+            ),
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2025-01-31",
+                "Q",
+                2025,
+                "Q2",
+                250.0,
+                "USD",
+                "0000000000-25-000002",
+                "ocf-fy25-q2-ytd",
+                "https://example/fy25-q2",
+                "10-Q",
+                "2025-02-20",
+                "",
+            ),
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2025-04-30",
+                "Q",
+                2025,
+                "Q3",
+                420.0,
+                "USD",
+                "0000000000-25-000003",
+                "ocf-fy25-q3-ytd",
+                "https://example/fy25-q3",
+                "10-Q",
+                "2025-05-20",
+                "",
+            ),
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2025-10-31",
+                "Q",
+                2026,
+                "Q1",
+                130.0,
+                "USD",
+                "0000000000-26-000001",
+                "ocf-fy26-q1",
+                "https://example/fy26-q1",
+                "10-Q",
+                "2025-11-20",
+                "",
+            ),
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2026-01-31",
+                "Q",
+                2026,
+                "Q2",
+                290.0,
+                "USD",
+                "0000000000-26-000002",
+                "ocf-fy26-q2-ytd",
+                "https://example/fy26-q2",
+                "10-Q",
+                "2026-02-20",
+                "",
+            ),
+        ]
+        con.executemany(
+            "INSERT INTO raw_financials VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        con.execute(_SQL_CANONICAL)
+
+        df = _export_fact_financials(con, fy_end_month=7)
+    finally:
+        con.close()
+
+    values = {
+        (row["line_item"], str(pd.to_datetime(row["period_end"]).date())): row["value"]
+        for _, row in df.iterrows()
+    }
+    # FY2025 Q1 — Q1 always equals YTD, unchanged.
+    assert values[("OperatingCashFlow", "2024-10-31")] == 100.0
+    # FY2025 Q2 — 250 (YTD) − 100 (Q1).
+    assert values[("OperatingCashFlow", "2025-01-31")] == 150.0
+    # FY2025 Q3 — 420 (YTD) − 250 (Q2 YTD).
+    assert values[("OperatingCashFlow", "2025-04-30")] == 170.0
+    # FY2026 Q1 — load-bearing assertion: must NOT subtract FY2025 Q3's 420.
+    assert values[("OperatingCashFlow", "2025-10-31")] == 130.0
+    # FY2026 Q2 — 290 (YTD) − 130 (FY2026 Q1).
+    assert values[("OperatingCashFlow", "2026-01-31")] == 160.0
+
+
+def test_fact_financials_warns_when_cash_flow_q4_baseline_missing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Q4 with no Q2/Q3 must not be silently published as a standalone diff.
+
+    The earlier baseline-missing test only exercised the Q3 branch; this test
+    exercises Q4 specifically because Q4 is the most consequential gap (12-month
+    YTD silently labeled as a 3-month standalone is a 4× overstatement).
+    """
+    import duckdb
+
+    from src.build_warehouse import _SQL_CANONICAL
+
+    db_path = tmp_path / "synthetic_cash_flow_q4_missing_baseline.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("""
+            CREATE TABLE raw_financials (
+                ticker        VARCHAR,
+                line_item     VARCHAR,
+                concept_used  VARCHAR,
+                period_end    DATE,
+                period_type   VARCHAR,
+                fiscal_year   INTEGER,
+                fiscal_period VARCHAR,
+                value         DOUBLE,
+                unit          VARCHAR,
+                accession_no  VARCHAR,
+                fact_id       VARCHAR,
+                filing_url    VARCHAR,
+                form_type     VARCHAR,
+                filed_date    DATE,
+                frame         VARCHAR
+            )
+        """)
+        rows = [
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2024-10-31",
+                "Q",
+                2025,
+                "Q1",
+                100.0,
+                "USD",
+                "0000000000-25-000001",
+                "ocf-q1",
+                "https://example/q1",
+                "10-Q",
+                "2024-11-20",
+                "CY2024Q3",
+            ),
+            (
+                "TEST",
+                "OperatingCashFlow",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "2025-07-31",
+                "Q",
+                2025,
+                "Q4",
+                600.0,
+                "USD",
+                "0000000000-25-000004",
+                "ocf-fy-cumulative",
+                "https://example/q4",
+                "10-K",
+                "2025-09-20",
+                "",
+            ),
+        ]
+        con.executemany(
+            "INSERT INTO raw_financials VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        con.execute(_SQL_CANONICAL)
+
+        df = _export_fact_financials(con, fy_end_month=7)
+    finally:
+        con.close()
+
+    q4 = df[(df["line_item"] == "OperatingCashFlow") & (df["fiscal_period"] == "Q4")]
+    assert len(q4) == 1
+    assert q4.iloc[0]["value"] == 600.0
+    assert "missing prior quarter baseline" in caplog.text
+    assert "Q4" in caplog.text
+
+
+def test_cash_flow_ytd_to_standalone_warns_on_duplicate_quarters(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two rows for the same (ticker, line_item, fiscal_year, q) must trigger a warning.
+
+    Upstream dedup in ``_export_fact_financials`` normally strips duplicates
+    before this function is called — so we exercise the warning branch by
+    invoking ``_cash_flow_ytd_to_standalone`` directly with a synthetic frame.
+    """
+    import logging
+
+    df = pd.DataFrame(
+        [
+            {
+                "ticker": "TEST",
+                "line_item": "OperatingCashFlow",
+                "period_type": "Q",
+                "fiscal_year": 2025,
+                "fiscal_period": "Q1",
+                "value": 80.0,
+                "frame": "CY2024Q3",
+            },
+            {
+                "ticker": "TEST",
+                "line_item": "OperatingCashFlow",
+                "period_type": "Q",
+                "fiscal_year": 2025,
+                "fiscal_period": "Q2",
+                "value": 250.0,
+                "frame": "",
+            },
+            {
+                "ticker": "TEST",
+                "line_item": "OperatingCashFlow",
+                "period_type": "Q",
+                "fiscal_year": 2025,
+                "fiscal_period": "Q2",
+                "value": 260.0,
+                "frame": "",
+            },
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="src.export_for_tableau"):
+        out = _cash_flow_ytd_to_standalone(df)
+
+    assert len(out) == len(df), "row count must be preserved"
+    assert "duplicate cash-flow fiscal quarters" in caplog.text
+    assert "OperatingCashFlow" in caplog.text
+    assert "FY2025" in caplog.text
+    assert "Q2" in caplog.text
 
 
 # ── _export_fact_forecasts ────────────────────────────────────────────────────

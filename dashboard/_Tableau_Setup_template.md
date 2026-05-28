@@ -8,7 +8,7 @@
 
 ## 1. File Overview
 
-The `/dashboard/tableau_data/` folder contains five files:
+The `/dashboard/tableau_data/` folder contains five CSVs plus a Hyper extract:
 
 | File | Description |
 |---|---|
@@ -17,6 +17,7 @@ The `/dashboard/tableau_data/` folder contains five files:
 | `dim_date.csv` | Date dimension: fiscal year/quarter + calendar year/quarter |
 | `dim_metric.csv` | Metric metadata: label, category, unit |
 | `dim_filing.csv` | One row per `accession_no` with `filing_url`, `form_type`, `filed_date` |
+| `{ticker}_financials.hyper` | Pre-built Tableau extract over `fact_financials` only (convenience; see §3) |
 
 ---
 
@@ -73,19 +74,24 @@ is built from `fact_financials` joined to the dimension tables.
   XBRL fact with a single accession.
 
 ### Sheet 2: {ticker} Margins %
-- Rows: gross margin %, operating margin %, net margin % (three measures
-  on the same axis, or three rows)
+- Rows: gross margin %, operating margin % (two measures on the same axis)
 - Columns: `period_end` (continuous, quarterly)
 - Marks: Line, one colour per margin type
 - Calculated fields (see §5):
   ```
   Gross Margin %     = SUM([GrossProfit])  / SUM([Revenue])
   Operating Margin % = SUM([OperatingIncome]) / SUM([Revenue])
-  Net Margin %       = SUM([NetIncome])    / SUM([Revenue])
   ```
 - Format axis as percentage; reference lines optional.
 - Provenance: each margin computes from two source rows (numerator and
   denominator) — show both accession_no values in the mark's tooltip.
+
+> **GAAP Net Margin excluded.** FY2024 Q2 (period_end 2024-01-31) contains
+> a non-recurring $1.5B net tax benefit from a deferred tax asset
+> valuation allowance release (per 10-Q `0001327567-24-000005`, filed
+> 2024-02-21), which produces a ~88% net margin print that distorts trend
+> comparisons. The Net Margin % calculation is preserved in the data
+> source for reuse but is not surfaced on this sheet.
 
 ### Sheet 3: Revenue Growth
 - Rows: YoY revenue growth %
@@ -101,20 +107,228 @@ is built from `fact_financials` joined to the dimension tables.
 - Provenance: each growth value comes from two Revenue rows (current quarter
   + same quarter prior year) — both accession_no values are tooltip-able.
 
+### Sheet 4: KPI Strip
+
+Seven tiles across the top of the dashboard. Each shows a trailing-twelve-month
+(TTM) figure with a sparkline + QoQ/YoY delta arrow underneath.
+
+Tiles (left → right): **TTM Revenue · TTM Operating Income · TTM FCF ·
+FCF Margin · Cash · YoY Revenue Growth · Rule of 40**.
+
+Build pattern (one BAN sheet per tile, identical recipe):
+- Detail mark: `period_end` (continuous, exact date)
+- Marks: Text — drag the calc field (below) to Text shelf
+- Filter `period_end` to *Most Recent* via a relative-date filter
+- Add a sparkline below the BAN: same calc on rows, `period_end` on columns,
+  size 60 px tall, axes hidden, no title — see §"Sparkline pattern" below
+- Add a delta-arrow caption: ▲ green for ≥0, ▼ red for <0, neutral grey at 0
+
+```
+// TTM aggregates — sum the trailing 4 quarters of Q facts
+// (filter line_item + period_type='Q' on the data source first)
+TTM Revenue        = WINDOW_SUM(SUM(IF [line_item]='Revenue'         THEN [value] END), -3, 0)
+TTM Op Income      = WINDOW_SUM(SUM(IF [line_item]='OperatingIncome' THEN [value] END), -3, 0)
+TTM OCF            = WINDOW_SUM(SUM(IF [line_item]='OperatingCashFlow' THEN [value] END), -3, 0)
+TTM CapEx          = WINDOW_SUM(SUM(IF [line_item]='CapEx'           THEN [value] END), -3, 0)
+TTM FCF            = [TTM OCF] - [TTM CapEx]
+TTM FCF Margin %   = [TTM FCF] / [TTM Revenue]
+
+// Cash is a stock (point-in-time), not a flow — use latest, not TTM
+Cash (Latest)      = SUM(IF [line_item]='Cash' THEN [value] END)
+
+// YoY revenue growth — uses the per-quarter Revenue (not TTM) so the
+// number matches Sheet 3
+YoY Revenue Growth = (SUM(IF [line_item]='Revenue' THEN [value] END)
+                     - LOOKUP(SUM(IF [line_item]='Revenue' THEN [value] END), -4))
+                   / ABS(LOOKUP(SUM(IF [line_item]='Revenue' THEN [value] END), -4))
+
+// Rule of 40 — durable SaaS quality bar
+Rule of 40         = [YoY Revenue Growth] + [TTM FCF Margin %]
+```
+
+**Format**:
+- Dollars: `$#,##0,,.0 "B"` for $-billions (e.g. `$10.2B`); `$#,##0,.0 "M"` for $-millions (Cash if <$1B)
+- Percentages: `#0.0%` (one decimal place)
+- Rule of 40: `#0.0%` plus a conditional reference colour — green if ≥40%, amber 30–40%, red <30%
+
+**Provenance**: every BAN tile's tooltip lists the *latest* `accession_no`
+contributing to it (TTM aggregates pull from 4 filings — list all 4 in the
+tooltip via `MIN([filed_date])` to `MAX([filed_date])` range and the *latest*
+accession as the click-through).
+
+### Sheet 5: FCF Cash Flow Bridge
+
+Quarterly bridge: OCF → CapEx → FCF. Shows how operating cash converts to
+free cash quarter by quarter.
+
+- Rows: `[value]` (with CapEx sign-flipped to negative; FCF as a calculated bar)
+- Columns: `period_end` (continuous, quarterly)
+- Marks: Bar (stacked) + line overlay for FCF
+- Three series on one axis, distinguished by colour:
+  - **OCF** — blue `#1f4e79`, positive bar
+  - **CapEx** — light blue `#7fa8c9`, negative bar (sign-flipped at the calc level)
+  - **FCF** — green `#2e7d32`, line + circle markers
+- Format: `$#,##0,.0 "M"` (millions, one decimal)
+- Filter to last 12 quarters (3 years)
+
+```
+OCF (signed)       = SUM(IF [line_item]='OperatingCashFlow' THEN [value]  END)
+CapEx (signed)     = SUM(IF [line_item]='CapEx'             THEN -[value] END)  // flip to negative
+FCF                = [OCF (signed)] + [CapEx (signed)]
+```
+
+**Provenance** is two-source per FCF mark — both OCF and CapEx accessions
+should appear in the tooltip:
+```
+Quarter:  <fiscal_year> <fiscal_period>
+OCF:      $<OCF>M  (accession <OCF accession>)
+CapEx:    $<CapEx>M (accession <CapEx accession>)
+FCF:      $<FCF>M
+Click to open: <URL action — fires on the OCF accession>
+```
+
+### Sheet 6: Profitability Stack (replaces Sheet 2)
+
+Multi-line chart of three margins on a shared % axis. **Replaces** Sheet 2
+(`{ticker} Margins %`) — same calc fields, but adds FCF Margin and a 30%
+Operating Margin reference line. Drop Sheet 2 from the dashboard once Sheet 6
+is wired up.
+
+- Rows: `[Gross Margin %]`, `[Operating Margin %]`, `[FCF Margin %]` (use
+  Measure Names / Measure Values to put three on one axis)
+- Columns: `period_end` (continuous, quarterly)
+- Marks: Line, one colour per margin type
+  - Gross — dark grey `#444444`
+  - Operating — medium grey `#888888`
+  - FCF — green `#2e7d32` (reuse the FCF bridge colour for visual continuity)
+- Format axis: `#0.0%`
+- **Reference line**: 30% on Operating Margin, dashed grey, label "Rule-of-thumb durable Op Margin"
+- **GAAP Net Margin remains excluded** for the same reason as Sheet 2 (FY2024
+  Q2 DTA valuation allowance release distorts the print). Calc field stays at
+  data-source level for future reuse.
+
+Provenance: each margin mark traces to two accessions (numerator + denominator).
+The tooltip should list both — same template as Sheet 2.
+
+### Sheet 7: Revenue & Forecast Overlay
+
+Actuals + 3-model forecast fan from `fact_forecasts.csv`. The point is to
+show the *range* of plausible outcomes, not a point estimate.
+
+**Cap the forecast horizon at 4 quarters out.** With ~20 historical
+observations, the 95% PI on quarter 5+ is wide enough to be meaningless
+(e.g. `$3.4B–$9.1B` for FY2027). Filter `fact_forecasts.period_end` to the
+first 4 forecast points.
+
+- Columns: `period_end` (continuous, quarterly)
+- Rows: `[value]` from `fact_financials` (Revenue), and `yhat` / band fields
+  from `fact_forecasts`
+- Marks:
+  - Actuals: solid line, `#1f4e79`
+  - `yhat` per model: dashed line, one colour per model (Prophet `#5b8def`,
+    AutoARIMA `#a169b8`, Lasso `#e07b00`)
+  - 80% PI band: shaded area between `yhat_lower_80` and `yhat_upper_80`,
+    20% opacity, model colour
+  - 95% PI band: shaded area between `yhat_lower_95` and `yhat_upper_95`,
+    10% opacity, same colour (gives the layered fan look)
+- Format: `$#,##0,,.0 "B"` (billions)
+- Add a **parameter** `[Selected Model]` with allowable values
+  `Prophet | AutoARIMA | Lasso | All`; filter the forecast layer to match
+- **Provenance note in the tooltip**: forecasts are *not* SEC-sourced —
+  show "Forecast: <model>, generated YYYY-MM-DD, 95% PI [low, high]" and
+  do **not** wire a sec.gov URL action on forecast marks (only on actuals)
+
+### Sheet 8: DSO (Days Sales Outstanding)
+
+`DSO = AccountsReceivable / Revenue × 91`. Rising = customers paying slower
+(collections risk); falling = collections improving.
+
+- Columns: `period_end` (continuous, quarterly)
+- Rows: `[DSO]` (calc field below)
+- Marks: Bar + an 8-quarter rolling average overlay line
+- Format: `#0` with " d" suffix (e.g. `78 d`)
+- Reference line: 75 days (industry median for enterprise security
+  software), dashed grey
+
+```
+DSO = SUM(IF [line_item]='AccountsReceivable' THEN [value] END)
+    / SUM(IF [line_item]='Revenue'             THEN [value] END)
+    * 91
+DSO 8Q Rolling Avg = WINDOW_AVG([DSO], -7, 0)
+```
+
+Provenance: two-source (AR + Revenue accessions, same quarter).
+
+### Sheet 9: Deferred Revenue / Billings Proxy
+
+Forward-revenue visibility. Until RPO ingests (bead `zh9`), the QoQ change
+in deferred revenue is the standard analyst proxy for billings.
+
+- Columns: `period_end` (continuous, quarterly)
+- Rows (dual axis):
+  - Bar: `[Billings Proxy]` (QoQ change in DefRev) — `$M`
+  - Line: `[DefRev / Revenue]` (forward-cover ratio) — `%`
+- Format bar: `$#,##0,.0 "M"`; format line axis: `#0.0%`
+
+```
+DefRev (Latest)    = SUM(IF [line_item]='DeferredRevenue' THEN [value] END)
+Billings Proxy     = [DefRev (Latest)] - LOOKUP([DefRev (Latest)], -1)
+DefRev / Revenue   = [DefRev (Latest)]
+                   / SUM(IF [line_item]='Revenue' THEN [value] END)
+```
+
+Caption to add on the sheet: "Billings proxy = ΔDeferredRevenue (current).
+Approximation only — true billings = revenue + ΔDefRev. Replace with RPO
+when available."
+
+### Sheet 10: Rule of 40 Quadrant
+
+Scatter: X = YoY revenue growth %, Y = TTM FCF margin %. The 40% diagonal
+is the durable-SaaS threshold — above-and-right = healthy, below-and-left
+= at-risk.
+
+- Columns: `[YoY Revenue Growth]` (continuous, %)
+- Rows: `[TTM FCF Margin %]` (continuous, %)
+- Marks: Circle, one mark per quarter
+  - Colour: `fiscal_year` (sequential palette — older years lighter, newer darker)
+  - Detail: `period_end` (one mark per quarter)
+  - Size: small (8 px); ~20 quarters total
+- Add a **trail line** (Path → period_end ascending) so the time order is
+  visible — Tableau's "trail" mark or a connected line via `period_end` on Path
+- **Reference line**: the 40% diagonal — add a calc field `[40 Line] = 0.40 - [YoY Revenue Growth]` and plot as a reference band, *or* draw a manual annotation line through `(0%, 40%)` and `(40%, 0%)`
+- **Annotate** the most recent quarter with its label (e.g. `FY2026 Q2`) and the Rule-of-40 score
+- Format axes: `#0.0%`
+
+Provenance: each dot traces to *4* filings (TTM aggregates) — list the
+range `MIN(filed_date) … MAX(filed_date)` in the tooltip; URL action fires
+on the latest quarter's accession.
+
+### Sheet 11: Forecast vs Actuals Scorecard
+
+Model accountability. For the most-recent realised quarter, show the prior
+forecast (per model) vs the actual that landed.
+
+- One small table, four rows (Actual, Prophet, AutoARIMA, Lasso), three columns:
+  Quarter, Forecast / Actual, Δ vs Actual %
+- Pull the actual from `fact_financials`; pull the forecast from
+  `fact_forecasts` filtered to the same `period_end`
+- Format Δ: `+0.0%;-0.0%`, green if `|Δ| < 5%`, amber 5–10%, red >10%
+- Caption: "Forecasts generated YYYY-MM-DD, before this quarter's filing.
+  No data leakage."
+
+It's small, but it's the falsifiable one — the model has to be wrong in public.
+
 ### Future work (v2 — not yet published)
 
-The pipeline already produces `fact_forecasts.csv` and `v_variance_facts`,
-but the following four sheets have not been built into the published
-workbook. They are tracked as v2 dashboard work:
+The pipeline already produces `fact_forecasts.csv` and `v_variance_facts`.
+Sheet 7 + Sheet 11 land the forecast overlay and accountability scorecard;
+the following remain v2:
 
-- **Actual vs Forecast** — dual-axis line: actuals from `fact_financials` +
-  forecast bands (80% / 95% CIs) from `fact_forecasts`, three-model ensemble
-  (Prophet / AutoARIMA / Lasso).
 - **Variance Drivers** — bar chart of `revenue_variance_vs_forecast` per
   quarter, coloured by driver type (volume / margin / mix / one-time) from
   `v_variance_facts`.
-- **Forecast Accuracy** — MAE and MAPE per expanding-window CV fold,
-  grouped by model, with a 10% MAPE reference line.
+- **Forecast Accuracy (CV folds)** — MAE and MAPE per expanding-window CV
+  fold, grouped by model, with a 10% MAPE reference line.
 - **Scenario Toggle** — parameter-driven Base / Bull / Bear filter on
   `fact_forecasts`, showing revenue forecast with CI bands.
 
@@ -140,8 +354,14 @@ Operating Margin % = SUM(IF [line_item]='OperatingIncome'  THEN [value] END)
 Net Margin %       = SUM(IF [line_item]='NetIncome'        THEN [value] END)
                    / SUM(IF [line_item]='Revenue'          THEN [value] END)
 
-FCF Margin %       = SUM(IF [line_item]='FreeCashFlow'     THEN [value] END)
-                   / SUM(IF [line_item]='Revenue'          THEN [value] END)
+// FCF is not a fact row — computed from OCF − CapEx (CapEx values are positive in
+// fact_financials.csv, so we subtract). Each FCF mark therefore traces to two
+// source filings — list both accession_no values in the tooltip.
+Free Cash Flow     = SUM(IF [line_item]='OperatingCashFlow' THEN [value] END)
+                   - SUM(IF [line_item]='CapEx'             THEN [value] END)
+
+FCF Margin %       = [Free Cash Flow]
+                   / SUM(IF [line_item]='Revenue'           THEN [value] END)
 
 // Growth (period_end on Columns, sorted ascending, line_item filtered to Revenue)
 YoY Revenue Growth = (SUM([value]) - LOOKUP(SUM([value]), -4))
@@ -162,16 +382,78 @@ MAPE per fold      = ABS(([Revenue Actual] - [Revenue Forecast]) / [Revenue Actu
 On any worksheet showing actuals:
 1. In the **Tooltip** editor, add:
    ```
-   Source filing: <accession_no>
-   Filed: <filed_date>  |  Form: <form_type>
-   Click to open: <URL action>
+   Source: 10-Q filed <filed_date>  ·  accession <accession_no>
+   Click to open on SEC.gov
    ```
 2. Create a **URL Action**: Dashboard → Actions → URL
-   - URL: `<filing_url>`
-   - Run on: Hover or Click
+   - Source sheets: every actuals/margin/FCF sheet on the dashboard
+   - Run on: **Menu** (avoids accidental nav on hover; reviewers right-click → "Open SEC filing")
+   - URL: `<filing_url>`  (drag the field in via the URL editor — Tableau substitutes per row)
+   - Name shown in tooltip: "Open SEC filing"
 
-This is what makes the model interview-defensible: every data point is one click
-away from its source SEC filing.
+For multi-source marks (FCF, margins, growth), the URL action fires on the
+*primary* accession (OCF for FCF; numerator for margins; current-quarter for
+growth). The tooltip still lists all contributing accessions in plain text so
+no source is hidden.
+
+Every data point is one click away from its source SEC filing.
+
+---
+
+## 6b. Dashboard Layout (Day 3 target — adds Forecast / Working-Capital / Rule of 40)
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  {ticker} — Financial Model        Data through FYYYYY Q# (10-Q YYYY-MM-DD) │
+├────────┬────────┬────────┬────────┬────────┬────────┬─────────────────────────┤
+│ Sheet 4 (KPI strip — 7 BAN tiles, equal width):                             │
+│ TTM Rev │ TTM OI │ TTM FCF│ FCF M %│  Cash  │ YoY Rev│  Rule of 40           │
+├────────┴────────┴────────┴────────┴────────┴────────┴─────────────────────────┤
+│ Sheet 7 — Revenue & Forecast Overlay (capped 4Q out)  │ Sheet 11 — Forecast  │
+│                                                       │ vs Actuals scorecard │
+├───────────────────────────────┬──────────────────────────────────────────────┤
+│ Sheet 6 — Profitability Stack │  Sheet 5 — FCF Cash Flow Bridge              │
+├───────────────────────────────┼──────────────────────────────────────────────┤
+│ Sheet 8 — DSO                 │  Sheet 9 — Deferred Revenue / Billings Proxy │
+├───────────────────────────────┴──────────────────────────────────────────────┤
+│ Sheet 10 — Rule of 40 Quadrant (full width)                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Footer: warning + "Source: SEC EDGAR · model snapshot YYYY-MM-DD · CC0"      │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+Drop Sheets 1 and 3 from the dashboard once Sheet 7 (which carries actuals
+inline) and Sheet 4's BAN tiles cover their content. Drop Sheet 2 once
+Sheet 6 is in (already noted in §Sheet 6).
+
+---
+
+## 6c. Color palette (lock once, reuse everywhere)
+
+| Series                       | Hex       | Where used                       |
+|------------------------------|-----------|----------------------------------|
+| Revenue / Operating positive | `#1f4e79` | Sheet 1, Sheet 5 OCF             |
+| FCF / cash positive          | `#2e7d32` | Sheet 5 FCF line, Sheet 6 FCF M  |
+| CapEx / outflow              | `#7fa8c9` | Sheet 5 CapEx                    |
+| Gross margin                 | `#444444` | Sheet 6                          |
+| Operating margin             | `#888888` | Sheet 6                          |
+| Forecast 80% / 95% bands     | translucent `#e07b00` | (v2 forecast overlay)|
+| Reference lines              | dashed grey `#bbbbbb` | All sheets                       |
+
+Set these as a custom Tableau colour palette in `Preferences.tps` so the
+choices are diff-visible in `PANW_Dashboard.twb`.
+
+---
+
+## 6d. Sparkline pattern (KPI strip)
+
+Each KPI tile has a 60-px tall sparkline directly under the BAN:
+- New worksheet, drag BAN's calc to Rows, `period_end` to Columns (continuous)
+- Marks: Line, no markers, weight 1.5px
+- Format: hide both axes, hide gridlines, hide title, no tooltip
+- Filter `period_end` to last 12 quarters
+- On the dashboard, place this sheet directly below the BAN tile in a vertical
+  layout container; pin height at 60 px
 
 ---
 

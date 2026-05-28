@@ -168,6 +168,205 @@ def test_crwd_revenue_concept() -> None:
     assert used == {"RevenueFromContractWithCustomerIncludingAssessedTax"}
 
 
+# ── Concept-selection logic (most-quarterly-coverage wins) ─────────────────────
+
+
+def _synthetic_facts(concept_facts: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """Build a minimal companyfacts JSON with the given concept → USD facts mapping."""
+    return {
+        "facts": {
+            "us-gaap": {
+                concept: {"units": {"USD": facts}} for concept, facts in concept_facts.items()
+            }
+        }
+    }
+
+
+def _q_fact(
+    period_end: str, fy: int, fp: str, val: float, accn: str = "0000000-00-000001"
+) -> dict[str, Any]:
+    """One synthetic quarterly fact row."""
+    return {
+        "end": period_end,
+        "fy": fy,
+        "fp": fp,
+        "val": val,
+        "accn": accn,
+        "form": "10-Q",
+        "filed": "2025-01-01",
+    }
+
+
+def test_concept_selection_picks_highest_coverage() -> None:
+    """When two concepts both have data, pick the one with more quarterly facts.
+
+    Mirrors the real-world PANW CapEx case: pre-2022 reported under
+    PaymentsToAcquirePropertyPlantAndEquipment (2 facts), post-2022 under
+    PaymentsToAcquireProductiveAssets (many facts).  The bug we're guarding
+    against: 'first non-empty wins' would pick the 2-fact concept and silently
+    drop the rest of history.
+    """
+    from src.ingest_edgar import _extract_line_item  # noqa: PLC0415
+
+    facts = _synthetic_facts(
+        {
+            "PaymentsToAcquirePropertyPlantAndEquipment": [
+                _q_fact("2022-01-31", 2022, "Q2", 39_500_000),
+                _q_fact("2022-04-30", 2022, "Q3", 39_500_000),
+            ],
+            "PaymentsToAcquireProductiveAssets": [
+                _q_fact("2024-10-31", 2025, "Q1", 84_000_000),
+                _q_fact("2025-01-31", 2025, "Q2", 92_000_000),
+                _q_fact("2025-04-30", 2025, "Q3", 159_900_000),
+                _q_fact("2025-10-31", 2026, "Q1", 84_000_000),
+                _q_fact("2026-01-31", 2026, "Q2", 254_000_000),
+            ],
+        }
+    )
+    rows = _extract_line_item(
+        facts, "CapEx", "PANW", 1327567, CONCEPT_SYNONYMS["CapEx"], min_fiscal_year=2020
+    )
+    used = {r["concept_used"] for r in rows}
+    assert used == {
+        "PaymentsToAcquireProductiveAssets"
+    }, f"Expected the higher-coverage concept to win; got {used}"
+    assert len(rows) == 5
+
+
+def test_concept_selection_breaks_ties_by_list_order() -> None:
+    """When two concepts have equal coverage, the one listed first in
+    CONCEPT_SYNONYMS wins (deterministic tiebreak)."""
+    from src.ingest_edgar import _extract_line_item  # noqa: PLC0415
+
+    # Build two concepts with identical fact counts (3 quarters each).
+    facts = _synthetic_facts(
+        {
+            "PaymentsToAcquirePropertyPlantAndEquipment": [
+                _q_fact("2022-01-31", 2022, "Q2", 1_000),
+                _q_fact("2022-04-30", 2022, "Q3", 1_000),
+                _q_fact("2022-07-31", 2022, "Q4", 1_000),
+            ],
+            "PaymentsToAcquireProductiveAssets": [
+                _q_fact("2023-01-31", 2023, "Q2", 2_000),
+                _q_fact("2023-04-30", 2023, "Q3", 2_000),
+                _q_fact("2023-07-31", 2023, "Q4", 2_000),
+            ],
+        }
+    )
+    rows = _extract_line_item(
+        facts, "CapEx", "ANY", 1, CONCEPT_SYNONYMS["CapEx"], min_fiscal_year=2020
+    )
+    # CONCEPT_SYNONYMS lists PaymentsToAcquirePropertyPlantAndEquipment first.
+    used = {r["concept_used"] for r in rows}
+    assert used == {"PaymentsToAcquirePropertyPlantAndEquipment"}
+
+
+def test_concept_selection_warns_on_concept_switch(caplog: pytest.LogCaptureFixture) -> None:
+    """When two concepts both have substantive coverage (>2 quarters each),
+    log a warning so concept-switch events aren't silently masked."""
+    import logging  # noqa: PLC0415
+
+    from src.ingest_edgar import _extract_line_item  # noqa: PLC0415
+
+    facts = _synthetic_facts(
+        {
+            "PaymentsToAcquirePropertyPlantAndEquipment": [
+                _q_fact("2021-01-31", 2021, "Q2", 1_000),
+                _q_fact("2021-04-30", 2021, "Q3", 1_000),
+                _q_fact("2021-07-31", 2021, "Q4", 1_000),
+            ],
+            "PaymentsToAcquireProductiveAssets": [
+                _q_fact("2024-01-31", 2024, "Q2", 2_000),
+                _q_fact("2024-04-30", 2024, "Q3", 2_000),
+                _q_fact("2024-07-31", 2024, "Q4", 2_000),
+                _q_fact("2024-10-31", 2025, "Q1", 2_000),
+            ],
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="src.ingest_edgar"):
+        rows = _extract_line_item(
+            facts, "CapEx", "ANY", 1, CONCEPT_SYNONYMS["CapEx"], min_fiscal_year=2020
+        )
+
+    assert rows, "Expected rows from the higher-coverage concept"
+    assert any(
+        "concept-switch detected" in rec.message and "CapEx" in rec.message
+        for rec in caplog.records
+    ), f"Expected concept-switch warning; got: {[r.message for r in caplog.records]}"
+
+
+def test_concept_selection_prefers_recent_over_legacy() -> None:
+    """Recency-aware: a discontinued concept with more lifetime facts must NOT
+    outvote the current concept whose facts fall in the keep window.
+
+    Real-world case: PANW reported Revenue under SalesRevenueNet through FY2018
+    (130 facts), then switched to RevenueFromContractWithCustomerExcludingAssessedTax
+    from FY2019 onwards (113 facts within keep window).  A naïve max-lifetime-
+    coverage rule would pick the obsolete concept; the in-window rule picks
+    the current concept correctly.
+    """
+    from src.ingest_edgar import _extract_line_item  # noqa: PLC0415
+
+    facts = _synthetic_facts(
+        {
+            # Legacy concept: 8 quarterly facts but all in FY2015-FY2018
+            "SalesRevenueNet": [
+                _q_fact(f"{y}-{m}-30", y, fp, 1_000_000)
+                for y in (2015, 2016, 2017, 2018)
+                for fp, m in (("Q1", "10"), ("Q2", "01"))
+            ],
+            # Current concept: 4 quarterly facts in FY2024
+            "RevenueFromContractWithCustomerExcludingAssessedTax": [
+                _q_fact("2024-01-31", 2024, "Q2", 2_000_000),
+                _q_fact("2024-04-30", 2024, "Q3", 2_000_000),
+                _q_fact("2024-07-31", 2024, "Q4", 2_000_000),
+                _q_fact("2024-10-31", 2025, "Q1", 2_000_000),
+            ],
+        }
+    )
+    rows = _extract_line_item(
+        facts,
+        "Revenue",
+        "PANW",
+        1327567,
+        ["SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax"],
+        min_fiscal_year=2020,
+    )
+    used = {r["concept_used"] for r in rows}
+    assert used == {
+        "RevenueFromContractWithCustomerExcludingAssessedTax"
+    }, f"Expected the in-window concept to win over the legacy concept; got {used}"
+
+
+def test_concept_selection_ignores_empty_concept() -> None:
+    """A concept entry that exists but has zero quarterly facts (e.g. annual-
+    only or stub) is ignored — should not block selection of a real concept."""
+    from src.ingest_edgar import _extract_line_item  # noqa: PLC0415
+
+    facts = _synthetic_facts(
+        {
+            "PaymentsToAcquirePropertyPlantAndEquipment": [
+                # FY-only fact, not quarterly — should not be counted as coverage
+                _q_fact("2022-07-31", 2022, "FY", 100_000),
+            ],
+            "PaymentsToAcquireProductiveAssets": [
+                _q_fact("2025-01-31", 2025, "Q2", 92_000_000),
+                _q_fact("2025-04-30", 2025, "Q3", 159_900_000),
+            ],
+        }
+    )
+    rows = _extract_line_item(
+        facts, "CapEx", "ANY", 1, CONCEPT_SYNONYMS["CapEx"], min_fiscal_year=2020
+    )
+    # The first concept has FY-only coverage (0 quarterly); should pick the
+    # second concept, but the FY row in the first concept should ALSO survive
+    # if it's in _VALID_FP — actually _VALID_FP includes FY, so the first
+    # concept has 1 valid fact total but 0 *quarterly* facts.  The selection
+    # rule scores by quarterly count, so the second concept wins.
+    used = {r["concept_used"] for r in rows}
+    assert used == {"PaymentsToAcquireProductiveAssets"}
+
+
 @pytest.mark.parametrize(
     "fixture,ticker,cik_int",
     [

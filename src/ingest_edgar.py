@@ -95,6 +95,7 @@ CONCEPT_SYNONYMS: dict[str, list[str]] = {
     "FinancingCashFlow": ["NetCashProvidedByUsedInFinancingActivities"],
     "CapEx": [
         "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
         "PaymentsForCapitalImprovements",
     ],
     "Depreciation": [
@@ -230,21 +231,58 @@ def _extract_line_item(
     """
     us_gaap: dict[str, Any] = facts_json.get("facts", {}).get("us-gaap", {})
 
-    used_concept: str | None = None
-    usd_entries: list[dict[str, Any]] | None = None
-
+    # Among the configured concept synonyms, prefer the one with the most
+    # *recent* quarterly coverage (quarterly facts within the keep window).
+    # This is the "concept with most recent coverage wins" rule — it self-heals
+    # across companies that switch XBRL concepts mid-history (e.g. PANW reports
+    # CapEx under PaymentsToAcquirePropertyPlantAndEquipment pre-2022 and
+    # PaymentsToAcquireProductiveAssets after).
+    #
+    # Why recency matters: lifetime fact count alone would favour discontinued
+    # concepts.  Example: PANW reported Revenue under SalesRevenueNet through
+    # FY2018 (130 facts) and switched to RevenueFromContractWithCustomerExcluding-
+    # AssessedTax from FY2019 onwards (113 facts within keep window).  A
+    # naïve max-coverage rule would pick the obsolete concept.
+    #
+    # Ties broken by list order (stable, deterministic).
+    candidates: list[tuple[str, list[dict[str, Any]], int]] = []
     for concept in concepts:
-        if concept not in us_gaap:
+        raw_usd = us_gaap.get(concept, {}).get("units", {}).get("USD")
+        if not raw_usd:
             continue
-        raw_usd = us_gaap[concept].get("units", {}).get("USD")
-        if raw_usd:
-            used_concept = concept
-            usd_entries = raw_usd
-            break
+        # Score = number of quarterly facts within the keep window
+        # (fiscal_year >= min_fiscal_year AND fp ∈ {Q1..Q4}).
+        in_window = sum(
+            1
+            for e in raw_usd
+            if str(e.get("fp", "")) in _VALID_FP
+            and isinstance(e.get("fy"), int)
+            and int(e["fy"]) >= min_fiscal_year
+            and str(e.get("fp", "")) != "FY"
+        )
+        if in_window == 0:
+            continue
+        candidates.append((concept, raw_usd, in_window))
 
-    if used_concept is None or usd_entries is None:
+    if not candidates:
         logger.warning("  %s: no matching concept found (tried: %s)", line_item, concepts)
         return []
+
+    # Sort by in-window quarterly count desc; stable sort preserves list-order tiebreak.
+    candidates.sort(key=lambda c: -c[2])
+    used_concept, usd_entries, top_count = candidates[0]
+
+    # If two concepts both have >2 quarters of in-window coverage, that's a
+    # concept-switch event we want to surface in logs — not silently mask.
+    other_substantive = [(c, n) for c, _, n in candidates[1:] if n > 2]
+    if other_substantive:
+        logger.warning(
+            "  %s: concept-switch detected — picked %s (%d in-window quarterly facts); also: %s",
+            line_item,
+            used_concept,
+            top_count,
+            ", ".join(f"{c} ({n})" for c, n in other_substantive),
+        )
 
     logger.info("  %s → %s (%d raw entries)", line_item, used_concept, len(usd_entries))
 

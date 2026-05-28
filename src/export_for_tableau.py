@@ -43,6 +43,19 @@ _MODELS_DIR = _REPO_ROOT / "models"
 _TABLEAU_DIR = _REPO_ROOT / "dashboard" / "tableau_data"
 _DASHBOARD_DIR = _REPO_ROOT / "dashboard"
 
+_CUMULATIVE_CASH_FLOW_ITEMS: frozenset[str] = frozenset(
+    {
+        "OperatingCashFlow",
+        "InvestingCashFlow",
+        "FinancingCashFlow",
+        "CapEx",
+        "Depreciation",
+        "StockBasedCompensation",
+        "TreasuryStockRepurchases",
+    }
+)
+_QUARTER_FRAME_RE = r"^CY\d{4}Q[1-4]$"
+
 # ── Metric metadata ────────────────────────────────────────────────────────────
 # Controls dim_metric.csv — human labels and category groupings for Tableau.
 _METRIC_META: list[dict[str, str]] = [
@@ -75,6 +88,12 @@ _METRIC_META: list[dict[str, str]] = [
     {
         "line_item": "NetIncome",
         "label": "Net Income",
+        "category": "Income Statement",
+        "unit": "USD",
+    },
+    {
+        "line_item": "ResearchAndDevelopment",
+        "label": "Research & Development",
         "category": "Income Statement",
         "unit": "USD",
     },
@@ -129,7 +148,25 @@ _METRIC_META: list[dict[str, str]] = [
         "category": "Cash Flow",
         "unit": "USD",
     },
+    {
+        "line_item": "InvestingCashFlow",
+        "label": "Investing Cash Flow",
+        "category": "Cash Flow",
+        "unit": "USD",
+    },
+    {
+        "line_item": "FinancingCashFlow",
+        "label": "Financing Cash Flow",
+        "category": "Cash Flow",
+        "unit": "USD",
+    },
     {"line_item": "CapEx", "label": "Capital Expenditures", "category": "Cash Flow", "unit": "USD"},
+    {
+        "line_item": "Depreciation",
+        "label": "Depreciation & Amortization",
+        "category": "Cash Flow",
+        "unit": "USD",
+    },
     {
         "line_item": "FreeCashFlow",
         "label": "Free Cash Flow",
@@ -139,6 +176,12 @@ _METRIC_META: list[dict[str, str]] = [
     {
         "line_item": "StockBasedCompensation",
         "label": "Stock-Based Compensation",
+        "category": "Cash Flow",
+        "unit": "USD",
+    },
+    {
+        "line_item": "TreasuryStockRepurchases",
+        "label": "Treasury Stock Repurchases",
         "category": "Cash Flow",
         "unit": "USD",
     },
@@ -232,6 +275,105 @@ def _calendar_to_fiscal_quarter(
     quarter = 4 - months_before_fy_end // 3
     fiscal_year = ts.year if ts.month <= fy_end_month else ts.year + 1
     return fiscal_year, f"Q{quarter}"
+
+
+def _cash_flow_ytd_to_standalone(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert cumulative cash-flow duration facts into standalone quarters.
+
+    SEC cash-flow statements usually report Q2 and Q3 facts as fiscal-year-to-date
+    amounts, and those rows often have no quarter frame. Income-statement facts
+    commonly include quarter-framed standalone rows, so duplicate pruning is
+    enough there. For cash-flow duration metrics, explicitly difference each
+    non-quarter-framed Q2/Q3/Q4 row against the previous fiscal quarter's raw
+    cumulative value. Q1 remains unchanged because YTD equals standalone.
+
+    Implementation is a self-merge on ``(ticker, line_item, fiscal_year, q-1)``:
+    the prior-quarter raw value is attached as a vectorized ``_prev_raw`` column,
+    and the new ``value`` is computed in a single ``out.loc[mask, "value"] = ...``
+    assignment. Duplicate ``(group, quarter)`` rows are collapsed by
+    ``groupby().max()`` for the baseline lookup, which is deterministic and
+    sign-preserving (the upstream dedup pipeline normally strips duplicates
+    before this function sees them; this branch only fires on synthetic or
+    pathological inputs and emits a warning).
+    """
+    if df.empty:
+        return df
+
+    out = df.copy()
+    frame_col = (
+        out["frame"] if "frame" in out.columns else pd.Series([""] * len(out), index=out.index)
+    )
+    quarter_num = out["fiscal_period"].astype(str).str.extract(r"Q([1-4])", expand=False)
+    out["_quarter_num"] = pd.to_numeric(quarter_num, errors="coerce")
+    out["_is_quarter_framed"] = frame_col.fillna("").str.match(_QUARTER_FRAME_RE).fillna(False)
+    out["_raw_value"] = out["value"]
+
+    cumulative_mask = (
+        out["line_item"].isin(_CUMULATIVE_CASH_FLOW_ITEMS)
+        & out["period_type"].eq("Q")
+        & out["_quarter_num"].notna()
+    )
+    if not cumulative_mask.any():
+        return out.drop(columns=["_quarter_num", "_is_quarter_framed", "_raw_value"])
+
+    cumulative = out.loc[cumulative_mask]
+    group_keys = ["ticker", "line_item", "fiscal_year", "_quarter_num"]
+
+    duplicates = (
+        cumulative.loc[cumulative.duplicated(subset=group_keys, keep=False), group_keys]
+        .drop_duplicates()
+        .sort_values(group_keys)
+    )
+    for (_ticker, line_item, fiscal_year), grp in duplicates.groupby(
+        ["ticker", "line_item", "fiscal_year"], sort=False
+    ):
+        quarters = ", ".join(f"Q{int(q)}" for q in grp["_quarter_num"].tolist())
+        logger.warning(
+            "  %s FY%s: duplicate cash-flow fiscal quarters in Tableau export: %s",
+            line_item,
+            fiscal_year,
+            quarters,
+        )
+
+    baseline = (
+        cumulative.groupby(group_keys, sort=False)["_raw_value"]
+        .max()
+        .rename("_prev_raw")
+        .reset_index()
+        .rename(columns={"_quarter_num": "_baseline_q"})
+    )
+    out["_baseline_q"] = out["_quarter_num"] - 1
+    out = out.merge(
+        baseline,
+        on=["ticker", "line_item", "fiscal_year", "_baseline_q"],
+        how="left",
+    )
+
+    update_mask = (
+        out["line_item"].isin(_CUMULATIVE_CASH_FLOW_ITEMS)
+        & out["period_type"].eq("Q")
+        & out["_quarter_num"].notna()
+        & (out["_quarter_num"] > 1)
+        & (~out["_is_quarter_framed"].astype(bool))
+    )
+    has_baseline = update_mask & out["_prev_raw"].notna()
+    out.loc[has_baseline, "value"] = (
+        out.loc[has_baseline, "_raw_value"] - out.loc[has_baseline, "_prev_raw"]
+    )
+
+    missing = out.loc[update_mask & out["_prev_raw"].isna(), ["line_item", "fiscal_year", "_quarter_num"]]
+    for _, row in missing.iterrows():
+        logger.warning(
+            "  %s FY%s Q%d: cannot convert cumulative cash-flow row to standalone; "
+            "missing prior quarter baseline",
+            row["line_item"],
+            row["fiscal_year"],
+            int(row["_quarter_num"]),
+        )
+
+    return out.drop(
+        columns=["_quarter_num", "_is_quarter_framed", "_raw_value", "_baseline_q", "_prev_raw"]
+    )
 
 
 # ── Export functions ───────────────────────────────────────────────────────────
@@ -359,6 +501,8 @@ def _export_fact_financials(
         fiscal_pairs = [_calendar_to_fiscal_quarter(pe, fy_end_month) for pe in df["period_end"]]
         df["fiscal_year"] = [fy for fy, _fp in fiscal_pairs]
         df["fiscal_period"] = [fp for _fy, fp in fiscal_pairs]
+
+    df = _cash_flow_ytd_to_standalone(df)
 
     return df.sort_values(["line_item", "fiscal_year", "fiscal_period"]).reset_index(drop=True)
 
@@ -513,6 +657,7 @@ def _try_write_hyper(tableau_dir: Path, ticker: str) -> None:
             HyperProcess(Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU) as hp,
             Connection(hp.endpoint, str(hyper_path), CreateMode.CREATE_AND_REPLACE) as con,
         ):
+            con.catalog.create_schema_if_not_exists("Extract")
             schema = TableDefinition(
                 TableName("Extract", "fact_financials"),
                 [
@@ -533,11 +678,16 @@ def _try_write_hyper(tableau_dir: Path, ticker: str) -> None:
                 df = pd.read_csv(fin_csv)
                 with Inserter(con, schema) as ins:
                     for _, row in df.iterrows():
+                        period_end_ts = pd.to_datetime(
+                            row.get("period_end"),
+                            errors="coerce",
+                        )
+                        period_end = None if pd.isna(period_end_ts) else period_end_ts.date()
                         ins.add_row(
                             [
                                 str(row.get("ticker", "")),
                                 str(row.get("line_item", "")),
-                                str(row.get("period_end", ""))[:10],
+                                period_end,
                                 int(row.get("fiscal_year", 0))
                                 if pd.notna(row.get("fiscal_year"))
                                 else 0,

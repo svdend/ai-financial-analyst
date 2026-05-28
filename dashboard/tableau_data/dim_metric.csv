@@ -5,6 +5,7 @@ GrossProfit,Gross Profit,Income Statement,USD
 OperatingExpenses,Operating Expenses,Income Statement,USD
 OperatingIncome,Operating Income,Income Statement,USD
 NetIncome,Net Income,Income Statement,USD
+ResearchAndDevelopment,Research & Development,Income Statement,USD
 Cash,Cash & Equivalents,Balance Sheet,USD
 AccountsReceivable,Accounts Receivable,Balance Sheet,USD
 Inventory,Inventory,Balance Sheet,USD
@@ -14,6 +15,10 @@ TotalAssets,Total Assets,Balance Sheet,USD
 TotalLiabilities,Total Liabilities,Balance Sheet,USD
 TotalEquity,Total Equity,Balance Sheet,USD
 OperatingCashFlow,Operating Cash Flow,Cash Flow,USD
+InvestingCashFlow,Investing Cash Flow,Cash Flow,USD
+FinancingCashFlow,Financing Cash Flow,Cash Flow,USD
 CapEx,Capital Expenditures,Cash Flow,USD
+Depreciation,Depreciation & Amortization,Cash Flow,USD
 FreeCashFlow,Free Cash Flow,Cash Flow,USD
 StockBasedCompensation,Stock-Based Compensation,Cash Flow,USD
+TreasuryStockRepurchases,Treasury Stock Repurchases,Cash Flow,USD
