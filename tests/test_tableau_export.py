@@ -20,6 +20,7 @@ from src.build_warehouse import build as build_warehouse
 from src.export_for_tableau import (
     _calendar_to_fiscal_quarter,
     _cash_flow_ytd_to_standalone,
+    _derive_free_cash_flow,
     _export_dim_filing,
     _export_dim_metric,
     _export_fact_financials,
@@ -367,6 +368,67 @@ def test_fact_financials_unique_per_period_end(tmp_path: Path) -> None:
     assert (
         len(dup_rows) == 0
     ), f"Duplicate (ticker, line_item, period_end) rows in export:\n{dup_rows.to_string()}"
+
+
+def _two_cashflow_rows() -> pd.DataFrame:
+    """Minimal standalone OCF + CapEx frame for one period, sharing a filing."""
+    base = {
+        "ticker": "PANW",
+        "period_end": "2026-01-31",
+        "period_type": "Q",
+        "fiscal_year": 2026,
+        "fiscal_period": "Q2",
+        "unit": "USD",
+        "accession_no": "0001327567-26-000001",
+        "filing_url": "https://example.com/10q",
+        "form_type": "10-Q",
+        "filed_date": "2026-02-18",
+        "frame": "CY2026Q1",
+    }
+    return pd.DataFrame(
+        [
+            {
+                **base,
+                "line_item": "OperatingCashFlow",
+                "value": 554_000_000.0,
+                "concept_used": "NetCashProvidedByUsedInOperatingActivities",
+                "fact_id": "f1",
+            },
+            {
+                **base,
+                "line_item": "CapEx",
+                "value": 170_000_000.0,
+                "concept_used": "PaymentsToAcquireProductiveAssets",
+                "fact_id": "f2",
+            },
+        ]
+    )
+
+
+def test_derive_free_cash_flow_equals_ocf_minus_capex() -> None:
+    """FreeCashFlow row = OperatingCashFlow - CapEx for the shared period_end."""
+    out = _derive_free_cash_flow(_two_cashflow_rows())
+    fcf = out[out["line_item"] == "FreeCashFlow"]
+    assert len(fcf) == 1
+    assert fcf.iloc[0]["value"] == pytest.approx(554_000_000.0 - 170_000_000.0)
+
+
+def test_derive_free_cash_flow_inherits_filing_provenance() -> None:
+    """Derived FCF inherits the filing's accession_no / filing_url (no orphan rows)."""
+    out = _derive_free_cash_flow(_two_cashflow_rows())
+    fcf = out[out["line_item"] == "FreeCashFlow"].iloc[0]
+    assert fcf["accession_no"] == "0001327567-26-000001"
+    assert fcf["filing_url"] == "https://example.com/10q"
+    assert fcf["fiscal_year"] == 2026
+    assert fcf["fiscal_period"] == "Q2"
+
+
+def test_derive_free_cash_flow_skips_periods_missing_a_leg() -> None:
+    """No FCF row is emitted for a period that lacks either OCF or CapEx."""
+    rows = _two_cashflow_rows()
+    ocf_only = rows[rows["line_item"] == "OperatingCashFlow"]
+    out = _derive_free_cash_flow(ocf_only)
+    assert "FreeCashFlow" not in out["line_item"].values
 
 
 def test_fact_financials_fiscal_labels_self_consistent_with_period_end(tmp_path: Path) -> None:

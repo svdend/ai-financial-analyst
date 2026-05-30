@@ -593,7 +593,7 @@
         <calculation class='tableau' formula='SUM(IF [line_item] = &apos;NetIncome&apos; THEN [Calculation_4390148995850240] END)&#10;  / SUM(IF [line_item] = &apos;Revenue&apos; THEN [Calculation_4390148995850240] END)' />
       </column>
       <column caption='YoY Revenue Growth' datatype='real' name='[Calculation_4390149001904132]' role='measure' type='quantitative'>
-        <calculation class='tableau' formula='(SUM([Calculation_4390148995850240]) - LOOKUP(SUM([Calculation_4390148995850240]), -4))&#10;  / ABS(LOOKUP(SUM([Calculation_4390148995850240]), -4))'>
+        <calculation class='tableau' formula='(SUM([Calculation_4390148995850240]) - LOOKUP(SUM([Calculation_4390148995850240]), -3))&#10;  / ABS(LOOKUP(SUM([Calculation_4390148995850240]), -3))'>
           <table-calc ordering-type='Rows' />
         </calculation>
       </column>
@@ -1430,7 +1430,7 @@
               <calculation class='tableau' formula='[value] / 1000000000' />
             </column>
             <column caption='YoY Revenue Growth' datatype='real' name='[Calculation_4390149001904132]' role='measure' type='quantitative'>
-              <calculation class='tableau' formula='(SUM([Calculation_4390148995850240]) - LOOKUP(SUM([Calculation_4390148995850240]), -4))&#10;  / ABS(LOOKUP(SUM([Calculation_4390148995850240]), -4))'>
+              <calculation class='tableau' formula='(SUM([Calculation_4390148995850240]) - LOOKUP(SUM([Calculation_4390148995850240]), -3))&#10;  / ABS(LOOKUP(SUM([Calculation_4390148995850240]), -3))'>
                 <table-calc ordering-type='Rows' />
               </calculation>
             </column>
@@ -1796,7 +1796,7 @@
               <calculation class='tableau' formula='[value] / 1000000000' />
             </column>
             <column caption='Rule of 40 Score' datatype='real' name='[Calculation_5100000000000003]' role='measure' type='quantitative'>
-              <calculation class='tableau' formula='(SUM(IF [line_item] = &apos;Revenue&apos; THEN [Calculation_4390148995850240] END) - LOOKUP(SUM(IF [line_item] = &apos;Revenue&apos; THEN [Calculation_4390148995850240] END), -4))&#10;/ ABS(LOOKUP(SUM(IF [line_item] = &apos;Revenue&apos; THEN [Calculation_4390148995850240] END), -4))&#10;+ SUM(IF [line_item] = &apos;FreeCashFlow&apos; THEN [Calculation_4390148995850240] END)&#10;/ SUM(IF [line_item] = &apos;Revenue&apos; THEN [Calculation_4390148995850240] END)'>
+              <calculation class='tableau' formula='(SUM(IF [line_item] = &apos;Revenue&apos; THEN [Calculation_4390148995850240] END) - LOOKUP(SUM(IF [line_item] = &apos;Revenue&apos; THEN [Calculation_4390148995850240] END), -3))&#10;/ ABS(LOOKUP(SUM(IF [line_item] = &apos;Revenue&apos; THEN [Calculation_4390148995850240] END), -3))&#10;+ SUM(IF [line_item] = &apos;FreeCashFlow&apos; THEN [Calculation_4390148995850240] END)&#10;/ SUM(IF [line_item] = &apos;Revenue&apos; THEN [Calculation_4390148995850240] END)'>
                 <table-calc ordering-type='Rows' />
               </calculation>
             </column>

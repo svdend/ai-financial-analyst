@@ -55,6 +55,7 @@ _CUMULATIVE_CASH_FLOW_ITEMS: frozenset[str] = frozenset(
     }
 )
 _QUARTER_FRAME_RE = r"^CY\d{4}Q[1-4]$"
+_FCF_DERIVED_CONCEPT = "OperatingCashFlow - CapEx (derived)"
 
 # ── Metric metadata ────────────────────────────────────────────────────────────
 # Controls dim_metric.csv — human labels and category groupings for Tableau.
@@ -361,7 +362,9 @@ def _cash_flow_ytd_to_standalone(df: pd.DataFrame) -> pd.DataFrame:
         out.loc[has_baseline, "_raw_value"] - out.loc[has_baseline, "_prev_raw"]
     )
 
-    missing = out.loc[update_mask & out["_prev_raw"].isna(), ["line_item", "fiscal_year", "_quarter_num"]]
+    missing = out.loc[
+        update_mask & out["_prev_raw"].isna(), ["line_item", "fiscal_year", "_quarter_num"]
+    ]
     for _, row in missing.iterrows():
         logger.warning(
             "  %s FY%s Q%d: cannot convert cumulative cash-flow row to standalone; "
@@ -374,6 +377,39 @@ def _cash_flow_ytd_to_standalone(df: pd.DataFrame) -> pd.DataFrame:
     return out.drop(
         columns=["_quarter_num", "_is_quarter_framed", "_raw_value", "_baseline_q", "_prev_raw"]
     )
+
+
+def _derive_free_cash_flow(df: pd.DataFrame) -> pd.DataFrame:
+    """Append derived FreeCashFlow rows (OperatingCashFlow − CapEx).
+
+    Free cash flow is not a single XBRL concept; it is the standard SaaS
+    definition computed from the standalone ``OperatingCashFlow`` and ``CapEx``
+    rows of the *same* filing.  Each derived row inherits the OperatingCashFlow
+    row's provenance (accession_no, filing_url, fiscal labels), so the "every
+    fact row traces to an SEC filing" invariant still holds.  Periods missing
+    either leg are skipped — no FCF row is fabricated without both inputs.
+    """
+    ocf = df[df["line_item"] == "OperatingCashFlow"]
+    capex = df[df["line_item"] == "CapEx"][["ticker", "period_end", "value"]].rename(
+        columns={"value": "_capex"}
+    )
+    if ocf.empty or capex.empty:
+        return df
+
+    merged = ocf.merge(capex, on=["ticker", "period_end"], how="inner")
+    if merged.empty:
+        return df
+
+    fcf = merged.assign(
+        line_item="FreeCashFlow",
+        value=merged["value"] - merged["_capex"],
+        concept_used=_FCF_DERIVED_CONCEPT,
+        fact_id=merged["accession_no"]
+        .astype(str)
+        .str.cat(merged["period_end"].astype(str), sep=":FreeCashFlow:"),
+    ).drop(columns=["_capex"])[df.columns]
+
+    return pd.concat([df, fcf], ignore_index=True)
 
 
 # ── Export functions ───────────────────────────────────────────────────────────
@@ -503,6 +539,7 @@ def _export_fact_financials(
         df["fiscal_period"] = [fp for _fy, fp in fiscal_pairs]
 
     df = _cash_flow_ytd_to_standalone(df)
+    df = _derive_free_cash_flow(df)
 
     return df.sort_values(["line_item", "fiscal_year", "fiscal_period"]).reset_index(drop=True)
 
