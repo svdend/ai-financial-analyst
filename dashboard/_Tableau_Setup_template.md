@@ -259,27 +259,33 @@ DSO 8Q Rolling Avg = WINDOW_AVG([DSO], -7, 0)
 
 Provenance: two-source (AR + Revenue accessions, same quarter).
 
-### Sheet 9: Deferred Revenue / Billings Proxy
+### Sheet 9: Billings (Derived)
 
-Forward-revenue visibility. Until RPO ingests (bead `zh9`), the QoQ change
-in deferred revenue is the standard analyst proxy for billings.
+Forward-revenue visibility. Billings is the standard analyst metric for
+demand recognised this quarter regardless of revenue timing:
+
+    Billings = Revenue + ΔDeferredRevenue
+
+This matches the calc in `src/build_variance_facts.py`. Until RPO disclosure
+ingests (bead `zh9`), this derivation is the closest GAAP-only equivalent.
 
 - Columns: `period_end` (continuous, quarterly)
 - Rows (dual axis):
-  - Bar: `[Billings Proxy]` (QoQ change in DefRev) — `$M`
+  - Bar: `[Billings (Derived)]` — `$M`
   - Line: `[DefRev / Revenue]` (forward-cover ratio) — `%`
 - Format bar: `$#,##0,.0 "M"`; format line axis: `#0.0%`
 
 ```
+Revenue (Latest)   = SUM(IF [line_item]='Revenue' THEN [value] END)
 DefRev (Latest)    = SUM(IF [line_item]='DeferredRevenue' THEN [value] END)
-Billings Proxy     = [DefRev (Latest)] - LOOKUP([DefRev (Latest)], -1)
-DefRev / Revenue   = [DefRev (Latest)]
-                   / SUM(IF [line_item]='Revenue' THEN [value] END)
+Δ DefRev           = [DefRev (Latest)] - LOOKUP([DefRev (Latest)], -1)
+Billings (Derived) = [Revenue (Latest)] + [Δ DefRev]
+DefRev / Revenue   = [DefRev (Latest)] / [Revenue (Latest)]
 ```
 
-Caption to add on the sheet: "Billings proxy = ΔDeferredRevenue (current).
-Approximation only — true billings = revenue + ΔDefRev. Replace with RPO
-when available."
+Caption to add on the sheet: "Billings = Revenue + ΔDeferredRevenue, the
+standard analyst proxy. Replace with RPO disclosure when ingested
+(bead `zh9`)."
 
 ### Sheet 10: Rule of 40 Quadrant
 
@@ -414,7 +420,7 @@ Every data point is one click away from its source SEC filing.
 ├───────────────────────────────┬──────────────────────────────────────────────┤
 │ Sheet 6 — Profitability Stack │  Sheet 5 — FCF Cash Flow Bridge              │
 ├───────────────────────────────┼──────────────────────────────────────────────┤
-│ Sheet 8 — DSO                 │  Sheet 9 — Deferred Revenue / Billings Proxy │
+│ Sheet 8 — DSO                 │  Sheet 9 — Billings (Derived)                │
 ├───────────────────────────────┴──────────────────────────────────────────────┤
 │ Sheet 10 — Rule of 40 Quadrant (full width)                                  │
 ├──────────────────────────────────────────────────────────────────────────────┤

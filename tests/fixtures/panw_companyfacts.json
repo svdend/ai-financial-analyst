@@ -89,6 +89,24 @@
           ]
         }
       }
+,
+      "ContractWithCustomerLiabilityCurrent": {
+        "label": "Contract with Customer, Liability, Current",
+        "description": "Amount of obligation to transfer good or service to customer for which consideration has been received or is receivable, classified as current.",
+        "units": {
+          "USD": [
+            {"end":"2022-10-31","val":3741300000,"accn":"0001327567-22-000038","fy":2023,"fp":"Q1","form":"10-Q","filed":"2022-11-18","frame":"CY2022Q3I"},
+            {"end":"2023-01-31","val":3942500000,"accn":"0001327567-23-000006","fy":2023,"fp":"Q2","form":"10-Q","filed":"2023-02-22","frame":"CY2022Q4I"},
+            {"end":"2023-04-30","val":4146700000,"accn":"0001327567-23-000014","fy":2023,"fp":"Q3","form":"10-Q","filed":"2023-05-24","frame":"CY2023Q1I"},
+            {"end":"2023-07-31","val":4674600000,"accn":"0001327567-23-000024","fy":2023,"fp":"FY","form":"10-K","filed":"2023-09-01"},
+            {"end":"2023-10-31","val":4732000000,"accn":"0001327567-23-000032","fy":2024,"fp":"Q1","form":"10-Q","filed":"2023-11-17","frame":"CY2023Q3I"},
+            {"end":"2024-01-31","val":4918100000,"accn":"0001327567-24-000005","fy":2024,"fp":"Q2","form":"10-Q","filed":"2024-02-21","frame":"CY2023Q4I"},
+            {"end":"2024-04-30","val":5014900000,"accn":"0001327567-24-000017","fy":2024,"fp":"Q3","form":"10-Q","filed":"2024-05-21","frame":"CY2024Q1I"},
+            {"end":"2024-07-31","val":5541100000,"accn":"0001327567-24-000029","fy":2024,"fp":"FY","form":"10-K","filed":"2024-09-06"},
+            {"end":"2024-10-31","val":5507700000,"accn":"0001327567-24-000040","fy":2025,"fp":"Q1","form":"10-Q","filed":"2024-11-21","frame":"CY2024Q3I"}
+          ]
+        }
+      }
     }
   }
 }

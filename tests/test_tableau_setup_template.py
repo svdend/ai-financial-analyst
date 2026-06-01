@@ -64,6 +64,38 @@ def test_renderer_substitutes_ticker(tmp_path: Path) -> None:
     assert "### Sheet 2: ACME Margins %" in body
 
 
+def test_billings_calc_includes_revenue_term(tmp_path: Path) -> None:
+    """Sheet 9 must surface Billings = Revenue + ΔDeferredRevenue.
+
+    The earlier "Billings Proxy" used only ΔDefRev, dropping the Revenue
+    term and understating billings by an order of magnitude. The Python
+    pipeline (src/build_variance_facts.py) already computes the correct
+    formula; this test pins the Tableau spec to the same definition.
+    """
+    _write_tableau_setup_md(tmp_path, "PANW")
+    body = (tmp_path / "Tableau_Setup.md").read_text(encoding="utf-8")
+
+    # Sheet renamed away from the misleading "Proxy" label.
+    assert "### Sheet 9: Billings (Derived)" in body, (
+        "Sheet 9 should be renamed 'Billings (Derived)' to match the "
+        "corrected calc and disambiguate from the dropped ΔDefRev-only proxy."
+    )
+    assert "Deferred Revenue / Billings Proxy" not in body, (
+        "Stale 'Billings Proxy' label must be removed from the template."
+    )
+
+    # The corrected calc must surface both terms.
+    assert "Billings (Derived) = [Revenue (Latest)] + [Δ DefRev]" in body, (
+        "Billings calc must be Revenue + ΔDeferredRevenue (matches "
+        "src/build_variance_facts.py). The old ΔDefRev-only formula "
+        "understated billings."
+    )
+    # Old buggy calc must be gone.
+    assert "Billings Proxy     = [DefRev (Latest)] - LOOKUP" not in body, (
+        "Buggy ΔDefRev-only Billings Proxy calc must be removed."
+    )
+
+
 def test_renderer_rejects_unknown_placeholder(tmp_path: Path) -> None:
     """A future template edit that introduces {foo} without renderer support must fail loudly.
 
