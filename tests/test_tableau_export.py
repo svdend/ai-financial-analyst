@@ -272,6 +272,96 @@ def test_fact_financials_contains_revenue(tmp_path: Path) -> None:
     assert "Revenue" in df["line_item"].values
 
 
+def test_fact_financials_supports_billings_calc(tmp_path: Path) -> None:
+    """Billings (Derived) = Revenue + ΔDeferredRevenue must reconstruct from fact_financials.
+
+    The Tableau calc field in dashboard/Tableau_Setup.md Sheet 9 reads:
+
+        Billings (Derived) = SUM(Revenue) + (SUM(DefRev) - LOOKUP(SUM(DefRev), -1))
+
+    The fixture's ``ContractWithCustomerLiabilityCurrent`` rows (mapped to
+    line_item "DeferredRevenue" by ingest_edgar) are real EDGAR data sourced
+    from PANW's filed 10-Q/10-K companyfacts (CIK 1327567).
+
+    Pin the math against PANW's Q1 FY2024 → Q2 FY2024 pair, both filed via
+    10-Q and surfaced as ``period_type='Q'``:
+
+        Q1 FY24 (2023-10-31): Revenue $1,878M, DefRev (current) $4,732.0M
+        Q2 FY24 (2024-01-31): Revenue $1,978M, DefRev (current) $4,918.1M
+        ΔDefRev = $186.1M;  Billings (Derived) = $2,164.1M
+
+    Known limitation: ``_export_fact_financials`` filters ``period_type='Q'``,
+    which drops the FY-end balance row (2023-07-31, fp=FY) — the closing
+    balance for Q4 FY23.  This means Sheet 9's calc has a gap at every fiscal
+    Q4 boundary.  Tracked as a separate bead; not addressed here because t1q
+    is scoped to the Q1→Q2/Q2→Q3/Q3→Q1-of-next-FY calc surfaces.
+    """
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _export_fact_financials(con)
+    finally:
+        con.close()
+
+    assert "Revenue" in df["line_item"].values, "Revenue rows missing — Billings calc cannot run."
+    assert "DeferredRevenue" in df["line_item"].values, (
+        "DeferredRevenue rows missing — Billings calc cannot run."
+    )
+
+    rev = (
+        df.loc[df["line_item"] == "Revenue", ["period_end", "value"]]
+        .rename(columns={"value": "revenue"})
+        .drop_duplicates("period_end")
+    )
+    dr = (
+        df.loc[df["line_item"] == "DeferredRevenue", ["period_end", "value"]]
+        .rename(columns={"value": "deferred_revenue"})
+        .drop_duplicates("period_end")
+    )
+    merged = rev.merge(dr, on="period_end", how="inner").sort_values("period_end")
+
+    q1_fy24 = "2023-10-31"
+    q2_fy24 = "2024-01-31"
+    row_q1 = merged.loc[merged["period_end"] == q1_fy24]
+    row_q2 = merged.loc[merged["period_end"] == q2_fy24]
+    assert not row_q1.empty, "Q1 FY24 row missing from merged Revenue+DefRev"
+    assert not row_q2.empty, "Q2 FY24 row missing from merged Revenue+DefRev"
+
+    rev_q2 = float(row_q2["revenue"].iloc[0])
+    dr_q2 = float(row_q2["deferred_revenue"].iloc[0])
+    dr_q1 = float(row_q1["deferred_revenue"].iloc[0])
+
+    # Ground truth from EDGAR companyfacts (CIK 1327567) — values match the
+    # numbers PANW filed in its 10-Q for Q2 FY2024 (filed 2024-02-21).
+    assert abs(rev_q2 - 1_978_000_000.0) < 1.0, (
+        f"PANW Q2 FY24 Revenue should be $1,978M; got ${rev_q2:,.0f}"
+    )
+    assert abs(dr_q2 - 4_918_100_000.0) < 1.0, (
+        f"PANW Q2 FY24 DefRev (current) should be $4,918.1M; got ${dr_q2:,.0f}"
+    )
+    assert abs(dr_q1 - 4_732_000_000.0) < 1.0, (
+        f"PANW Q1 FY24 DefRev (current) should be $4,732.0M; got ${dr_q1:,.0f}"
+    )
+
+    delta_dr = dr_q2 - dr_q1
+    billings_derived = rev_q2 + delta_dr
+    billings_buggy = delta_dr  # the legacy ΔDefRev-only "proxy"
+
+    # Hand-computed: $1,978M + ($4,918.1M − $4,732.0M) = $2,164.1M
+    expected_billings = 2_164_100_000.0
+    assert abs(billings_derived - expected_billings) < 1.0, (
+        f"Billings (Derived) for Q2 FY24 should be $2,164.1M; got ${billings_derived:,.0f}"
+    )
+
+    # Corrected formula minus the buggy ΔDefRev-only proxy equals Revenue —
+    # the magnitude of understatement this PR removes.
+    assert abs((billings_derived - billings_buggy) - rev_q2) < 1.0, (
+        "Billings (Derived) - Billings (buggy ΔDefRev-only) must equal Revenue."
+    )
+
+
 def test_fact_financials_excludes_derived_metrics(tmp_path: Path) -> None:
     """fact_financials must NOT contain derived metrics — they are Tableau calc fields.
 
@@ -342,9 +432,9 @@ def test_fact_financials_no_ytd_duplicates(tmp_path: Path) -> None:
         subset=["line_item", "period_end", "fiscal_year", "fiscal_period"], keep=False
     )
     dup_rows = df[dupes][["line_item", "period_end", "fiscal_period", "value"]]
-    assert (
-        len(dup_rows) == 0
-    ), f"YTD duplicates still present after deduplication:\n{dup_rows.to_string()}"
+    assert len(dup_rows) == 0, (
+        f"YTD duplicates still present after deduplication:\n{dup_rows.to_string()}"
+    )
 
 
 def test_fact_financials_unique_per_period_end(tmp_path: Path) -> None:
@@ -365,9 +455,9 @@ def test_fact_financials_unique_per_period_end(tmp_path: Path) -> None:
 
     dupes = df.duplicated(subset=["ticker", "line_item", "period_end"], keep=False)
     dup_rows = df[dupes][["line_item", "period_end", "fiscal_year", "fiscal_period", "value"]]
-    assert (
-        len(dup_rows) == 0
-    ), f"Duplicate (ticker, line_item, period_end) rows in export:\n{dup_rows.to_string()}"
+    assert len(dup_rows) == 0, (
+        f"Duplicate (ticker, line_item, period_end) rows in export:\n{dup_rows.to_string()}"
+    )
 
 
 def _two_cashflow_rows() -> pd.DataFrame:
