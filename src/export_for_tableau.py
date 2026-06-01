@@ -1,9 +1,10 @@
 """Export pipeline artifacts to Tableau-ready CSVs (and optional Hyper extract).
 
-Generates five files in ``/dashboard/tableau_data/``:
+Generates six files in ``/dashboard/tableau_data/``:
 
 * ``fact_financials.csv``  — long-format quarterly actuals with provenance columns
 * ``fact_forecasts.csv``   — combined Prophet + AutoARIMA + Lasso forecasts
+* ``fact_fcf_bridge.csv``  — long-format NI → FCF waterfall components per quarter
 * ``dim_date.csv``         — date dimension (fiscal + calendar)
 * ``dim_metric.csv``       — metric metadata (label, category, unit)
 * ``dim_filing.csv``       — one row per accession_no (provenance dimension)
@@ -585,6 +586,50 @@ def _export_fact_financials(
     return df.sort_values(["line_item", "fiscal_year", "fiscal_period"]).reset_index(drop=True)
 
 
+def _export_fact_fcf_bridge(
+    con: duckdb.DuckDBPyConnection,
+    fy_end_month: int = 12,
+) -> pd.DataFrame:
+    """Long-format Net Income → Free Cash Flow waterfall bridge.
+
+    Pulls ``v_fcf_bridge`` (one row per quarter × component) and recomputes
+    fiscal labels from ``period_end`` so each calendar quarter carries its
+    own fiscal pair (matches the convention used by
+    :func:`_export_fact_financials`).
+
+    The schema is what the Tableau Gantt-style waterfall sheet consumes
+    directly — ``component_order`` drives left-to-right placement and
+    ``component_role`` (start/add/subtract/subtotal/end) drives the colour
+    and bar style. The ``WorkingCapitalAndOther`` component carries
+    ``accession_no=NULL`` because it is a derived plug
+    (OCF − NI − D&A − SBC), not a single XBRL fact.
+    """
+    df = con.execute("""
+        SELECT
+            ticker,
+            period_end,
+            fiscal_year,
+            fiscal_period,
+            period_type,
+            component,
+            component_order,
+            component_role,
+            value,
+            accession_no,
+            fact_id,
+            filing_url
+        FROM v_fcf_bridge
+        ORDER BY period_end, component_order
+    """).fetchdf()
+
+    if len(df) > 0:
+        fiscal_pairs = [_calendar_to_fiscal_quarter(pe, fy_end_month) for pe in df["period_end"]]
+        df["fiscal_year"] = [fy for fy, _fp in fiscal_pairs]
+        df["fiscal_period"] = [fp for _fy, fp in fiscal_pairs]
+
+    return df.reset_index(drop=True)
+
+
 def _export_fact_forecasts(ticker: str, fy_end_month: int = 12) -> pd.DataFrame:
     """Combine all model forecast parquets.
 
@@ -881,6 +926,18 @@ def export(ticker: str | None = None) -> dict[str, Path]:
     df_filing.to_csv(p, index=False)
     outputs["dim_filing"] = p
     logger.info("  %d rows → %s", len(df_filing), p)
+
+    # ── fact_fcf_bridge ────────────────────────────────────────────────────────
+    logger.info("Exporting fact_fcf_bridge...")
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df_bridge = _export_fact_fcf_bridge(con, fy_end_month=fy_end_month)
+    finally:
+        con.close()
+    p = _TABLEAU_DIR / "fact_fcf_bridge.csv"
+    df_bridge.to_csv(p, index=False)
+    outputs["fact_fcf_bridge"] = p
+    logger.info("  %d rows → %s", len(df_bridge), p)
 
     # ── Hyper extract (optional) ───────────────────────────────────────────────
     _try_write_hyper(_TABLEAU_DIR, resolved_ticker)
