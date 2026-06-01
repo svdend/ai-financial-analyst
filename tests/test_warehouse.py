@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import duckdb
 import pandas as pd
+import pytest
 import yaml
 
 from src.build_warehouse import build, query_summary
@@ -313,9 +314,9 @@ def test_missing_quarters_flags_revenue_gap(tmp_path: Path) -> None:
     ]
     db_path = _build_synthetic_warehouse(rows, tmp_path)
     missing = _missing_quarters(db_path)
-    assert (
-        missing is not None and "FY2024Q2" in missing
-    ), f"expected FY2024Q2 in missing_quarters, got {missing!r}"
+    assert missing is not None and "FY2024Q2" in missing, (
+        f"expected FY2024Q2 in missing_quarters, got {missing!r}"
+    )
 
 
 def test_missing_quarters_ignores_inventory_gap(tmp_path: Path) -> None:
@@ -330,3 +331,195 @@ def test_missing_quarters_ignores_inventory_gap(tmp_path: Path) -> None:
     db_path = _build_synthetic_warehouse(rows, tmp_path)
     missing = _missing_quarters(db_path)
     assert not missing, f"expected empty/NULL (Inventory excluded), got {missing!r}"
+
+
+# ── v_fcf_bridge ──────────────────────────────────────────────────────────────
+
+
+def _bridge_rows(
+    fy: int,
+    fp: str,
+    period_end: str,
+    *,
+    net_income: float,
+    depreciation: float,
+    sbc: float,
+    ocf: float,
+    capex: float,
+) -> list[dict[str, Any]]:
+    """Synthetic raw_financials rows for one quarter, sufficient for v_fcf_bridge.
+
+    Working capital is implicit: ocf - net_income - depreciation - sbc.  The
+    plug is what the view computes, so callers control it indirectly via OCF.
+    """
+    return [
+        _row("NetIncome", fy, fp, period_end, net_income),
+        _row("Depreciation", fy, fp, period_end, depreciation),
+        _row("StockBasedCompensation", fy, fp, period_end, sbc),
+        _row("OperatingCashFlow", fy, fp, period_end, ocf),
+        _row("CapEx", fy, fp, period_end, capex),
+    ]
+
+
+def test_fcf_bridge_view_emits_six_components(tmp_path: Path) -> None:
+    """v_fcf_bridge must emit one row per bridge component for each quarter."""
+    rows = _bridge_rows(
+        2024,
+        "Q1",
+        "2024-01-31",
+        net_income=100.0,
+        depreciation=50.0,
+        sbc=80.0,
+        ocf=300.0,
+        capex=40.0,
+    )
+    db_path = _build_synthetic_warehouse(rows, tmp_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = con.execute(
+            "SELECT * FROM v_fcf_bridge ORDER BY period_end, component_order"
+        ).fetchdf()
+    finally:
+        con.close()
+    components = df["component"].tolist()
+    assert components == [
+        "NetIncome",
+        "Depreciation",
+        "StockBasedCompensation",
+        "WorkingCapitalAndOther",
+        "OperatingCashFlow",
+        "CapEx",
+        "FreeCashFlow",
+    ], f"unexpected component order: {components}"
+
+
+def test_fcf_bridge_reconciles_to_free_cash_flow(tmp_path: Path) -> None:
+    """Sum of NI + D&A + SBC + ΔWC equals OCF; OCF − CapEx equals FCF.
+
+    The plug ('WorkingCapitalAndOther') is computed as OCF − NI − D&A − SBC,
+    so the additive bars from NetIncome through WorkingCapitalAndOther must
+    sum to OCF *exactly* by construction.  The terminal FCF must equal
+    OCF − CapEx (CapEx is reported positive on the cash-flow statement and
+    is sign-flipped in the bridge).
+    """
+    rows = _bridge_rows(
+        2024,
+        "Q1",
+        "2024-01-31",
+        net_income=100.0,
+        depreciation=50.0,
+        sbc=80.0,
+        ocf=300.0,
+        capex=40.0,
+    )
+    db_path = _build_synthetic_warehouse(rows, tmp_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = con.execute(
+            "SELECT component, value FROM v_fcf_bridge "
+            "WHERE period_end = '2024-01-31' ORDER BY component_order"
+        ).fetchdf()
+    finally:
+        con.close()
+    by_component = dict(zip(df["component"], df["value"], strict=True))
+
+    # Plug is the residual that makes NI + D&A + SBC + ΔWC = OCF.
+    expected_wc = 300.0 - 100.0 - 50.0 - 80.0  # = 70
+    assert by_component["WorkingCapitalAndOther"] == pytest.approx(expected_wc)
+
+    # OCF subtotal equals the sum of the four additive bars.
+    additive_sum = (
+        by_component["NetIncome"]
+        + by_component["Depreciation"]
+        + by_component["StockBasedCompensation"]
+        + by_component["WorkingCapitalAndOther"]
+    )
+    assert additive_sum == pytest.approx(by_component["OperatingCashFlow"])
+
+    # CapEx is sign-flipped (cash *out*) in the bridge.
+    assert by_component["CapEx"] == pytest.approx(-40.0)
+
+    # FCF terminal equals OCF + signed CapEx.
+    assert by_component["FreeCashFlow"] == pytest.approx(
+        by_component["OperatingCashFlow"] + by_component["CapEx"]
+    )
+
+
+def test_fcf_bridge_carries_provenance_for_filed_components(tmp_path: Path) -> None:
+    """Each filed component (NI, D&A, SBC, OCF, CapEx) must carry accession_no.
+
+    The plug 'WorkingCapitalAndOther' is derived (no single source filing) so
+    its accession_no is NULL.  This is intentional and documented — the
+    Tableau spec surfaces the four contributing accessions in the tooltip.
+    """
+    rows = _bridge_rows(
+        2024,
+        "Q1",
+        "2024-01-31",
+        net_income=100.0,
+        depreciation=50.0,
+        sbc=80.0,
+        ocf=300.0,
+        capex=40.0,
+    )
+    db_path = _build_synthetic_warehouse(rows, tmp_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = con.execute(
+            "SELECT component, accession_no FROM v_fcf_bridge "
+            "WHERE period_end = '2024-01-31' ORDER BY component_order"
+        ).fetchdf()
+    finally:
+        con.close()
+    accn_by_component = dict(zip(df["component"], df["accession_no"], strict=True))
+    filed_components = [
+        "NetIncome",
+        "Depreciation",
+        "StockBasedCompensation",
+        "OperatingCashFlow",
+        "CapEx",
+        "FreeCashFlow",
+    ]
+    for c in filed_components:
+        assert pd.notna(accn_by_component[c]), f"component {c} must carry a non-null accession_no"
+    # The plug is the only derived bar without a single source accession.
+    assert pd.isna(accn_by_component["WorkingCapitalAndOther"])
+
+
+def test_fcf_bridge_skips_quarter_missing_required_component(tmp_path: Path) -> None:
+    """A quarter missing any of NI/D&A/SBC/OCF/CapEx should not produce bridge rows.
+
+    The bridge is meaningless if any component is absent — we'd be filling in
+    zeros that look like real $0 contributions.  Skip the quarter entirely and
+    let v_missing_coverage flag the gap.
+    """
+    # Q1 has every component.  Q2 is missing CapEx.
+    q1_rows = _bridge_rows(
+        2024,
+        "Q1",
+        "2024-01-31",
+        net_income=100.0,
+        depreciation=50.0,
+        sbc=80.0,
+        ocf=300.0,
+        capex=40.0,
+    )
+    q2_rows = [
+        _row("NetIncome", 2024, "Q2", "2024-04-30", 110.0),
+        _row("Depreciation", 2024, "Q2", "2024-04-30", 55.0),
+        _row("StockBasedCompensation", 2024, "Q2", "2024-04-30", 85.0),
+        _row("OperatingCashFlow", 2024, "Q2", "2024-04-30", 320.0),
+        # CapEx intentionally missing.
+    ]
+    db_path = _build_synthetic_warehouse(q1_rows + q2_rows, tmp_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = con.execute(
+            "SELECT DISTINCT period_end FROM v_fcf_bridge ORDER BY period_end"
+        ).fetchdf()
+    finally:
+        con.close()
+    period_ends = [str(pe) for pe in df["period_end"].tolist()]
+    assert period_ends == ["2024-01-31"], (
+        f"Q2 should be skipped (missing CapEx), got period_ends={period_ends}"
+    )

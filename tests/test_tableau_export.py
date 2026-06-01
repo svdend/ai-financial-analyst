@@ -443,6 +443,114 @@ def test_fact_financials_promotes_fy_balance_rows_to_q4(tmp_path: Path) -> None:
         )
 
 
+def test_fact_fcf_bridge_export_emits_seven_components_per_quarter(tmp_path: Path) -> None:
+    """fact_fcf_bridge.csv must have 7 rows per quarter (NI → ... → FCF)."""
+    from src.export_for_tableau import _export_fact_fcf_bridge
+
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _export_fact_fcf_bridge(con, fy_end_month=7)
+    finally:
+        con.close()
+    if df.empty:
+        # PANW fixture must have at least one complete quarter — Q1 FY24
+        # (2023-10-31) has NI, D&A (StockBasedCompensation is in fixture as
+        # ShareBasedCompensation), SBC, OCF, and CapEx... but CapEx isn't in
+        # the panw fixture. The export must handle the empty case cleanly
+        # (returning a typed DataFrame with the expected schema, not raising).
+        expected_cols = {
+            "ticker",
+            "period_end",
+            "fiscal_year",
+            "fiscal_period",
+            "component",
+            "component_order",
+            "component_role",
+            "value",
+            "accession_no",
+            "fact_id",
+            "filing_url",
+        }
+        assert expected_cols <= set(df.columns), (
+            f"empty bridge frame missing columns: {expected_cols - set(df.columns)}"
+        )
+        return
+    # Group by period and assert seven components.
+    counts = df.groupby("period_end").size()
+    assert (counts == 7).all(), f"expected 7 components per quarter, got:\n{counts}"
+
+
+def test_fact_fcf_bridge_synthetic_reconciliation(tmp_path: Path) -> None:
+    """End-to-end: synthetic warehouse → export → assert NI + addbacks = OCF."""
+    from src.build_warehouse import build as build_warehouse_fn
+    from src.export_for_tableau import _export_fact_fcf_bridge
+
+    rows = [
+        {
+            "ticker": "TEST",
+            "line_item": li,
+            "concept_used": li,
+            "period_end": "2024-01-31",
+            "period_type": "Q",
+            "fiscal_year": 2024,
+            "fiscal_period": "Q1",
+            "value": v,
+            "unit": "USD",
+            "accession_no": "0000000000-24-000001",
+            "fact_id": f"{li}-2024-Q1",
+            "filing_url": "https://example.test/0000000000-24-000001/",
+            "form_type": "10-Q",
+            "filed_date": "2024-01-31",
+            "frame": "CY2024Q1",
+        }
+        for li, v in [
+            ("NetIncome", 100.0),
+            ("Depreciation", 50.0),
+            ("StockBasedCompensation", 80.0),
+            ("OperatingCashFlow", 300.0),
+            ("CapEx", 40.0),
+        ]
+    ]
+    pd.DataFrame(rows).to_parquet(tmp_path / "TEST_financials.parquet", index=False)
+    config = {
+        "cik": "0000000000",
+        "cik_int": 0,
+        "ticker": "TEST",
+        "name": "Test",
+        "fiscal_year_end_month": 10,
+        "fiscal_year_end_day": 31,
+        "sector_etf": "XLK",
+    }
+    config_path = tmp_path / "company.yaml"
+    with config_path.open("w") as fh:
+        yaml.dump(config, fh)
+    with (
+        patch("src.build_warehouse._CONFIG_PATH", config_path),
+        patch("src.build_warehouse._PROCESSED_DIR", tmp_path),
+    ):
+        db_path = build_warehouse_fn(ticker="TEST")
+
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _export_fact_fcf_bridge(con, fy_end_month=10)
+    finally:
+        con.close()
+
+    by_component = dict(zip(df["component"], df["value"], strict=True))
+    assert by_component["NetIncome"] == pytest.approx(100.0)
+    assert by_component["Depreciation"] == pytest.approx(50.0)
+    assert by_component["StockBasedCompensation"] == pytest.approx(80.0)
+    assert by_component["WorkingCapitalAndOther"] == pytest.approx(70.0)
+    assert by_component["OperatingCashFlow"] == pytest.approx(300.0)
+    assert by_component["CapEx"] == pytest.approx(-40.0)
+    assert by_component["FreeCashFlow"] == pytest.approx(260.0)
+
+
 def test_fact_financials_excludes_derived_metrics(tmp_path: Path) -> None:
     """fact_financials must NOT contain derived metrics — they are Tableau calc fields.
 

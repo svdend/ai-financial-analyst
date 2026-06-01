@@ -220,6 +220,107 @@ GROUP BY period_end, fiscal_year, fiscal_period, period_type
 ORDER BY fiscal_year, fiscal_period
 """
 
+# ── SQL: FCF waterfall bridge ─────────────────────────────────────────────────
+# One row per (period_end, component) for the Net Income → FCF waterfall.
+# The four "additive" components (NI, D&A, SBC, ΔWorking-Capital-and-Other)
+# sum exactly to OperatingCashFlow by construction — the WorkingCapitalAndOther
+# bar is computed as the residual OCF − NI − D&A − SBC, which absorbs both
+# real working-capital movements and any other non-cash reconciliation items
+# (asset impairments, deferred-tax adjustments, etc.) without requiring us to
+# ingest the full XBRL working-capital reconciliation. CapEx is sign-flipped
+# (cash *out*) so the running total walks down to FreeCashFlow.
+#
+# Quarters missing any of the five filed components (NI, D&A, SBC, OCF, CapEx)
+# are excluded outright — partial bridges are misleading. v_missing_coverage
+# already surfaces the underlying gap.
+#
+# Schema:
+#   ticker, period_end, fiscal_year, fiscal_period, period_type,
+#   component, component_order, component_role, value,
+#   accession_no, fact_id, filing_url
+# component_role ∈ {start, add, subtract, subtotal, end}; the plug carries
+# accession_no=NULL because no single filing sources it.
+
+_SQL_FCF_BRIDGE = """
+CREATE OR REPLACE VIEW v_fcf_bridge AS
+WITH q AS (
+    SELECT
+        ticker,
+        period_end,
+        fiscal_year,
+        fiscal_period,
+        period_type,
+        MAX(CASE WHEN line_item = 'NetIncome'              THEN value END)        AS NetIncome,
+        MAX(CASE WHEN line_item = 'NetIncome'              THEN accession_no END) AS ni_accn,
+        MAX(CASE WHEN line_item = 'NetIncome'              THEN fact_id END)      AS ni_fact_id,
+        MAX(CASE WHEN line_item = 'NetIncome'              THEN filing_url END)   AS ni_url,
+        MAX(CASE WHEN line_item = 'Depreciation'           THEN value END)        AS Depreciation,
+        MAX(CASE WHEN line_item = 'Depreciation'           THEN accession_no END) AS da_accn,
+        MAX(CASE WHEN line_item = 'Depreciation'           THEN fact_id END)      AS da_fact_id,
+        MAX(CASE WHEN line_item = 'Depreciation'           THEN filing_url END)   AS da_url,
+        MAX(CASE WHEN line_item = 'StockBasedCompensation' THEN value END)        AS SBC,
+        MAX(CASE WHEN line_item = 'StockBasedCompensation' THEN accession_no END) AS sbc_accn,
+        MAX(CASE WHEN line_item = 'StockBasedCompensation' THEN fact_id END)      AS sbc_fact_id,
+        MAX(CASE WHEN line_item = 'StockBasedCompensation' THEN filing_url END)   AS sbc_url,
+        MAX(CASE WHEN line_item = 'OperatingCashFlow'      THEN value END)        AS OCF,
+        MAX(CASE WHEN line_item = 'OperatingCashFlow'      THEN accession_no END) AS ocf_accn,
+        MAX(CASE WHEN line_item = 'OperatingCashFlow'      THEN fact_id END)      AS ocf_fact_id,
+        MAX(CASE WHEN line_item = 'OperatingCashFlow'      THEN filing_url END)   AS ocf_url,
+        MAX(CASE WHEN line_item = 'CapEx'                  THEN value END)        AS CapEx,
+        MAX(CASE WHEN line_item = 'CapEx'                  THEN accession_no END) AS capex_accn,
+        MAX(CASE WHEN line_item = 'CapEx'                  THEN fact_id END)      AS capex_fact_id,
+        MAX(CASE WHEN line_item = 'CapEx'                  THEN filing_url END)   AS capex_url
+    FROM v_canonical_facts
+    WHERE period_type = 'Q'
+    GROUP BY ticker, period_end, fiscal_year, fiscal_period, period_type
+),
+complete AS (
+    -- Skip quarters missing any filed component — partial bridges mislead.
+    SELECT * FROM q
+    WHERE NetIncome     IS NOT NULL
+      AND Depreciation  IS NOT NULL
+      AND SBC           IS NOT NULL
+      AND OCF           IS NOT NULL
+      AND CapEx         IS NOT NULL
+)
+SELECT ticker, period_end, fiscal_year, fiscal_period, period_type,
+       'NetIncome'              AS component, 1 AS component_order, 'start'    AS component_role,
+       NetIncome                AS value, ni_accn AS accession_no, ni_fact_id AS fact_id, ni_url AS filing_url
+FROM complete
+UNION ALL
+SELECT ticker, period_end, fiscal_year, fiscal_period, period_type,
+       'Depreciation'           AS component, 2, 'add',
+       Depreciation, da_accn, da_fact_id, da_url
+FROM complete
+UNION ALL
+SELECT ticker, period_end, fiscal_year, fiscal_period, period_type,
+       'StockBasedCompensation' AS component, 3, 'add',
+       SBC, sbc_accn, sbc_fact_id, sbc_url
+FROM complete
+UNION ALL
+SELECT ticker, period_end, fiscal_year, fiscal_period, period_type,
+       'WorkingCapitalAndOther' AS component, 4, 'add',
+       OCF - NetIncome - Depreciation - SBC AS value,
+       NULL AS accession_no, NULL AS fact_id, NULL AS filing_url
+FROM complete
+UNION ALL
+SELECT ticker, period_end, fiscal_year, fiscal_period, period_type,
+       'OperatingCashFlow'      AS component, 5, 'subtotal',
+       OCF, ocf_accn, ocf_fact_id, ocf_url
+FROM complete
+UNION ALL
+SELECT ticker, period_end, fiscal_year, fiscal_period, period_type,
+       'CapEx'                  AS component, 6, 'subtract',
+       -CapEx AS value, capex_accn, capex_fact_id, capex_url
+FROM complete
+UNION ALL
+SELECT ticker, period_end, fiscal_year, fiscal_period, period_type,
+       'FreeCashFlow'           AS component, 7, 'end',
+       OCF - CapEx AS value, ocf_accn, ocf_fact_id, ocf_url
+FROM complete
+ORDER BY period_end, component_order
+"""
+
 # ── SQL: key metrics ──────────────────────────────────────────────────────────
 # Quarterly view only (period_type = 'Q').
 # YoY growth uses LAG(4) over ordered quarters; QoQ uses LAG(1).
@@ -380,6 +481,7 @@ _VIEWS: list[tuple[str, str]] = [
     ("v_income_statement_quarterly", _SQL_INCOME_STATEMENT),
     ("v_balance_sheet_quarterly", _SQL_BALANCE_SHEET),
     ("v_cash_flow_quarterly", _SQL_CASH_FLOW),
+    ("v_fcf_bridge", _SQL_FCF_BRIDGE),
     ("v_key_metrics", _SQL_KEY_METRICS),
     ("v_restatement_details", _SQL_RESTATEMENT_DETAILS),
     ("v_missing_coverage", _SQL_MISSING_COVERAGE),

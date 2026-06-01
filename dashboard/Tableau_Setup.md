@@ -8,12 +8,13 @@
 
 ## 1. File Overview
 
-The `/dashboard/tableau_data/` folder contains five CSVs plus a Hyper extract:
+The `/dashboard/tableau_data/` folder contains six CSVs plus a Hyper extract:
 
 | File | Description |
 |---|---|
 | `fact_financials.csv` | Long-format quarterly actuals (all line items) with provenance |
 | `fact_forecasts.csv` | Prophet + AutoARIMA + Lasso forecasts with 80%/95% CIs |
+| `fact_fcf_bridge.csv` | Long-format NI → FCF waterfall components per quarter (Sheet 5) |
 | `dim_date.csv` | Date dimension: fiscal year/quarter + calendar year/quarter |
 | `dim_metric.csv` | Metric metadata: label, category, unit |
 | `dim_filing.csv` | One row per `accession_no` with `filing_url`, `form_type`, `filed_date` |
@@ -26,10 +27,12 @@ The `/dashboard/tableau_data/` folder contains five CSVs plus a Hyper extract:
 Connect all tables in Tableau using these join keys:
 
 ```
-fact_financials ──── dim_date    on  fact_financials.period_end = dim_date.date_key
-fact_financials ──── dim_metric  on  fact_financials.line_item  = dim_metric.line_item
-fact_financials ──── dim_filing  on  fact_financials.accession_no = dim_filing.accession_no
-fact_forecasts  ──── dim_date    on  fact_forecasts.period_end  = dim_date.date_key
+fact_financials  ──── dim_date    on  fact_financials.period_end  = dim_date.date_key
+fact_financials  ──── dim_metric  on  fact_financials.line_item   = dim_metric.line_item
+fact_financials  ──── dim_filing  on  fact_financials.accession_no = dim_filing.accession_no
+fact_forecasts   ──── dim_date    on  fact_forecasts.period_end   = dim_date.date_key
+fact_fcf_bridge  ──── dim_date    on  fact_fcf_bridge.period_end  = dim_date.date_key
+fact_fcf_bridge  ──── dim_filing  on  fact_fcf_bridge.accession_no = dim_filing.accession_no
 ```
 
 `dim_filing` is the **provenance dimension** — every mark on a Tableau viz can
@@ -156,36 +159,93 @@ contributing to it (TTM aggregates pull from 4 filings — list all 4 in the
 tooltip via `MIN([filed_date])` to `MAX([filed_date])` range and the *latest*
 accession as the click-through).
 
-### Sheet 5: FCF Cash Flow Bridge
+### Sheet 5: FCF Waterfall Bridge (Net Income → FCF)
 
-Quarterly bridge: OCF → CapEx → FCF. Shows how operating cash converts to
-free cash quarter by quarter.
+True Gantt-style waterfall walking from Net Income to Free Cash Flow through
+the four reconciling components. Each quarter renders seven bars in fixed
+left-to-right order:
 
-- Rows: `[value]` (with CapEx sign-flipped to negative; FCF as a calculated bar)
-- Columns: `period_end` (continuous, quarterly)
-- Marks: Bar (stacked) + line overlay for FCF
-- Three series on one axis, distinguished by colour:
-  - **OCF** — blue `#1f4e79`, positive bar
-  - **CapEx** — light blue `#7fa8c9`, negative bar (sign-flipped at the calc level)
-  - **FCF** — green `#2e7d32`, line + circle markers
+    NetIncome → Depreciation → SBC → ΔWorkingCapital → OperatingCashFlow → CapEx → FreeCashFlow
+
+NI, D&A, SBC and ΔWC are *additive* bars whose running total reaches OCF
+exactly (the ΔWC component is the residual plug `OCF − NI − D&A − SBC`, so
+reconciliation is mathematical, not cosmetic). OCF is a *subtotal* bar; CapEx
+is sign-flipped to negative; FCF is the *terminal* total bar.
+
+**Data source: `fact_fcf_bridge.csv`** (one row per quarter × component).
+
+- Columns: `period_end` (continuous, quarterly) — outer trellis
+- Inside each quarter, place `[component_order]` (discrete, ascending) on the
+  inner Columns shelf so bars render left-to-right in the canonical order
+- Rows: a Gantt mark (one bar per component) — see calc fields below
+- Marks: **Gantt Bar** (size = `[Bar Size]`, with `[Bar Start]` on Rows)
+- Colour: `[component_role]` — five buckets:
+  - `start` (NetIncome) — `#1f4e79` (Revenue/Operating positive)
+  - `add` (Depreciation, SBC, ΔWC if positive) — `#2e7d32` (FCF green)
+  - `subtract` (CapEx, ΔWC if negative) — `#c0504d` (red — outflow)
+  - `subtotal` (OperatingCashFlow) — `#888888` (Operating margin grey)
+  - `end` (FreeCashFlow) — `#2e7d32` (FCF green, matches Sheet 6)
+- Filter to last 8 quarters (2 years) so the trellis stays legible
 - Format: `$#,##0,.0 "M"` (millions, one decimal)
-- Filter to last 12 quarters (3 years)
+
+**Gantt waterfall calculations.** A Gantt bar is anchored at `[Bar Start]`
+and extends by `[Bar Size]`. The running total walks NI → OCF on the
+additive bars, OCF holds while CapEx draws down, and FCF reads the final
+total:
 
 ```
-OCF (signed)       = SUM(IF [line_item]='OperatingCashFlow' THEN [value]  END)
-CapEx (signed)     = SUM(IF [line_item]='CapEx'             THEN -[value] END)  // flip to negative
-FCF                = [OCF (signed)] + [CapEx (signed)]
+// Running total of additive bars NI + D&A + SBC + ΔWC, in component_order
+Running Total =
+  RUNNING_SUM(SUM(IF [component_role] IN ('start','add')
+                  THEN [value] END))
+
+// Bar Size: positive bars rise from the floor; subtract bars fall from the top.
+// 'subtotal' (OCF) and 'end' (FCF) are total bars — they render as a single
+// bar from 0 to the value, not as a delta.
+Bar Size =
+  IF [component_role] = 'subtract' THEN -[value]
+  ELSEIF [component_role] IN ('subtotal','end') THEN [value]
+  ELSE [value] END
+
+// Bar Start: where the bar's bottom edge sits on the y-axis
+Bar Start =
+  IF [component_role] = 'start'      THEN 0
+  ELSEIF [component_role] = 'add'    THEN [Running Total] - [value]
+  ELSEIF [component_role] = 'subtract' THEN [Running Total]      // OCF level
+  ELSEIF [component_role] = 'subtotal' THEN 0                    // OCF total bar
+  ELSEIF [component_role] = 'end'      THEN 0                    // FCF total bar
+  END
 ```
 
-**Provenance** is two-source per FCF mark — both OCF and CapEx accessions
-should appear in the tooltip:
+Set the Marks card type to **Gantt Bar**, drop `[Bar Start]` on Rows and
+`[Bar Size]` on the Size shelf. The waterfall reads correctly on the first
+render — no manual offset tweaking required.
+
+**Reconciliation invariant** (verifiable in `tests/test_warehouse.py`):
+
+    NetIncome + Depreciation + SBC + WorkingCapitalAndOther = OperatingCashFlow
+    OperatingCashFlow + CapEx (signed)                        = FreeCashFlow
+
+Both lines hold by construction in `v_fcf_bridge`, so the bridge is
+guaranteed not to "almost" close.
+
+**Provenance** is per-component. Five of the seven components carry their
+source `accession_no` directly (NI, D&A, SBC, OCF, CapEx, FCF — FCF inherits
+OCF's accession). The `WorkingCapitalAndOther` plug carries
+`accession_no = NULL` because it is derived from the four contributing
+filings, not a single XBRL fact. The tooltip should make this explicit:
+
 ```
-Quarter:  <fiscal_year> <fiscal_period>
-OCF:      $<OCF>M  (accession <OCF accession>)
-CapEx:    $<CapEx>M (accession <CapEx accession>)
-FCF:      $<FCF>M
-Click to open: <URL action — fires on the OCF accession>
+Quarter:     <fiscal_year> <fiscal_period>
+Component:   <component>            $<value>M
+Source:      <accession_no | "Derived (OCF − NI − D&A − SBC)">
+Filed:       <filed_date>
+Open SEC filing  ← URL action; suppressed for the WC plug
 ```
+
+A quarter missing any of NI/D&A/SBC/OCF/CapEx is **excluded** from the
+bridge entirely (the view's `complete` CTE drops it). Don't fill zeros — the
+gap is real and `v_data_quality.missing_quarters` flags it elsewhere.
 
 ### Sheet 6: Profitability Stack (replaces Sheet 2)
 
@@ -438,11 +498,11 @@ Sheet 6 is in (already noted in §Sheet 6).
 
 | Series                       | Hex       | Where used                       |
 |------------------------------|-----------|----------------------------------|
-| Revenue / Operating positive | `#1f4e79` | Sheet 1, Sheet 5 OCF             |
-| FCF / cash positive          | `#2e7d32` | Sheet 5 FCF line, Sheet 6 FCF M  |
-| CapEx / outflow              | `#7fa8c9` | Sheet 5 CapEx                    |
+| Revenue / Operating positive | `#1f4e79` | Sheet 1, Sheet 5 NetIncome       |
+| FCF / cash positive          | `#2e7d32` | Sheet 5 add bars + FCF, Sheet 6  |
+| CapEx / outflow              | `#c0504d` | Sheet 5 subtract bars (CapEx)    |
+| Subtotal (OCF)               | `#888888` | Sheet 5 OCF subtotal, Sheet 6 OM |
 | Gross margin                 | `#444444` | Sheet 6                          |
-| Operating margin             | `#888888` | Sheet 6                          |
 | Forecast 80% / 95% bands     | translucent `#e07b00` | (v2 forecast overlay)|
 | Reference lines              | dashed grey `#bbbbbb` | All sheets                       |
 
