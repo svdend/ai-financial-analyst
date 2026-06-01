@@ -362,6 +362,87 @@ def test_fact_financials_supports_billings_calc(tmp_path: Path) -> None:
     )
 
 
+def test_fact_financials_promotes_fy_balance_rows_to_q4(tmp_path: Path) -> None:
+    """FY-end balance-sheet rows must surface as Q4 in fact_financials.
+
+    For balance-sheet (instantaneous) line items, the 10-K FY-end balance IS
+    the Q4 closing balance — there is no separate Q4 10-K filing.  Without
+    promotion, the export's ``WHERE period_type='Q'`` filter drops those rows
+    entirely, leaving Sheet 9 (Billings Derived) with a hole at every fiscal
+    Q4 boundary.
+
+    PANW FY23 ends 2023-07-31 with DefRev = $4,674.6M filed in the 10-K
+    (accession 0001327567-23-000024).  After this fix that row must appear
+    in fact_financials.csv with ``fiscal_period='Q4'`` and ``period_type='Q'``,
+    and provenance must be preserved (accession_no points back to the 10-K).
+
+    Flow items (Revenue, NetIncome) must NOT pick up FY rows — Q4 standalone
+    for flows is computed by subtraction (FY − Q1 − Q2 − Q3) elsewhere.
+    """
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _export_fact_financials(con, fy_end_month=7)
+    finally:
+        con.close()
+
+    fy23_def_rev = df.loc[
+        (df["line_item"] == "DeferredRevenue") & (df["period_end"] == "2023-07-31")
+    ]
+    assert not fy23_def_rev.empty, (
+        "DeferredRevenue FY-end balance at 2023-07-31 missing from fact_financials.\n"
+        "The 10-K FY-end balance is the Q4 closing balance and must surface."
+    )
+    assert len(fy23_def_rev) == 1, (
+        f"Expected exactly one DeferredRevenue row at 2023-07-31; got {len(fy23_def_rev)}"
+    )
+    row = fy23_def_rev.iloc[0]
+    assert row["fiscal_period"] == "Q4", (
+        f"FY-end balance at 2023-07-31 should be relabeled Q4; got {row['fiscal_period']}"
+    )
+    assert row["period_type"] == "Q", (
+        f"FY-end balance at 2023-07-31 should carry period_type='Q' after promotion; "
+        f"got {row['period_type']}"
+    )
+    assert int(row["fiscal_year"]) == 2023, (
+        f"FY-end balance at 2023-07-31 should carry fiscal_year=2023; got {row['fiscal_year']}"
+    )
+    assert abs(float(row["value"]) - 4_674_600_000.0) < 1.0, (
+        f"PANW FY23 DefRev should be $4,674.6M (10-K filed 2023-09-01); "
+        f"got ${float(row['value']):,.0f}"
+    )
+    # Provenance must trace back to the 10-K, not be invented.
+    assert row["accession_no"] == "0001327567-23-000024", (
+        f"Provenance lost on promoted FY row; got accession_no={row['accession_no']!r}"
+    )
+    assert row["form_type"] == "10-K", (
+        f"Promoted FY row must keep form_type='10-K'; got {row['form_type']!r}"
+    )
+
+    # Flow items (Revenue, NetIncome) must NOT pick up FY rows — Q4 standalone
+    # for flows is computed by subtraction elsewhere.
+    flow_fy_rows = df.loc[
+        df["line_item"].isin(["Revenue", "NetIncome", "OperatingIncome"])
+        & df["period_end"].isin(["2023-07-31", "2024-07-31"])
+    ]
+    # Flow items have an explicit Q4 fact in the fixture (fp='Q4'), but never
+    # an FY-only row promoted to Q4 — the value at FY-end period_end must
+    # reflect the Q4 standalone, not the FY total.
+    rev_fy23 = flow_fy_rows.loc[
+        (flow_fy_rows["line_item"] == "Revenue") & (flow_fy_rows["period_end"] == "2023-07-31")
+    ]
+    if not rev_fy23.empty:
+        # Q4 standalone is $2,610M (fp=Q4 in fixture); FY total is $6,893M.
+        # The export must surface the standalone, never the FY total.
+        v = float(rev_fy23.iloc[0]["value"])
+        assert abs(v - 2_610_000_000.0) < 1.0, (
+            f"Revenue at 2023-07-31 should be Q4 standalone $2,610M, never the FY "
+            f"total $6,893M (FY rows must not be promoted for flow items); got ${v:,.0f}"
+        )
+
+
 def test_fact_financials_excludes_derived_metrics(tmp_path: Path) -> None:
     """fact_financials must NOT contain derived metrics — they are Tableau calc fields.
 

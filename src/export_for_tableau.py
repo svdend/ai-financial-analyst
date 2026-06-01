@@ -54,6 +54,24 @@ _CUMULATIVE_CASH_FLOW_ITEMS: frozenset[str] = frozenset(
         "TreasuryStockRepurchases",
     }
 )
+# Balance-sheet items are reported as instantaneous (point-in-time) facts.
+# A 10-K filing's FY-end balance row IS the Q4 closing balance — there is no
+# separate Q4 10-K fact for these, unlike flow items where Q4 standalone is
+# computed by subtraction (FY − Q1 − Q2 − Q3). The export promotes the FY-end
+# balance row to (period_type='Q', fiscal_period='Q4') so Sheet 9 has an
+# unbroken series across Q4→Q1 transitions.
+_BALANCE_SHEET_LINE_ITEMS: frozenset[str] = frozenset(
+    {
+        "Cash",
+        "AccountsReceivable",
+        "Inventory",
+        "AccountsPayable",
+        "DeferredRevenue",
+        "TotalAssets",
+        "TotalLiabilities",
+        "TotalEquity",
+    }
+)
 _QUARTER_FRAME_RE = r"^CY\d{4}Q[1-4]$"
 _FCF_DERIVED_CONCEPT = "OperatingCashFlow - CapEx (derived)"
 
@@ -469,7 +487,15 @@ def _export_fact_financials(
     # to one canonical row per (ticker, line_item, period_end) using form
     # priority + most-recent filed_date.  This is what makes the export
     # Tableau-safe: every (line_item, period_end) pair appears exactly once.
-    df = con.execute("""
+    #
+    # Balance-sheet line items are reported as instantaneous facts; the 10-K
+    # FY-end balance IS the Q4 closing balance (no separate Q4 10-K filing
+    # for these).  Allow FY-period rows through the filter, but only for the
+    # balance-sheet line items — flow items derive Q4 standalone by
+    # subtraction (FY − Q1 − Q2 − Q3) elsewhere, so admitting FY rows for
+    # them would surface the FY total at a Q4 period_end.
+    balance_sheet_sql_list = ", ".join(f"'{li}'" for li in sorted(_BALANCE_SHEET_LINE_ITEMS))
+    df = con.execute(f"""
         SELECT
             ticker,
             line_item,
@@ -488,6 +514,7 @@ def _export_fact_financials(
             frame
         FROM v_canonical_facts
         WHERE period_type = 'Q'
+           OR (period_type = 'FY' AND line_item IN ({balance_sheet_sql_list}))
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY ticker, line_item, period_end
             ORDER BY
@@ -504,6 +531,20 @@ def _export_fact_financials(
         ) = 1
         ORDER BY line_item, fiscal_year, fiscal_period
     """).fetchdf()
+
+    # Promote FY-period balance-sheet rows to period_type='Q'.  After this
+    # relabel, the rest of the pipeline (which expects 'Q') treats them as
+    # Q4 closing balances; the fiscal_period is recomputed from period_end
+    # below and lands on 'Q4' for FY-end dates.  Defensive: only the
+    # whitelist of balance-sheet line items can have period_type='FY' here
+    # (the SQL filter guarantees it), but the explicit predicate keeps the
+    # invariant readable.
+    if len(df) > 0:
+        fy_balance_mask = df["period_type"].eq("FY") & df["line_item"].isin(
+            _BALANCE_SHEET_LINE_ITEMS
+        )
+        if fy_balance_mask.any():
+            df.loc[fy_balance_mask, "period_type"] = "Q"
 
     # Drop YTD duplicates with frame-aware priority: prefer quarter-framed
     # rows (CY####Q#) over empty/year-framed rows, then fall back to smaller
