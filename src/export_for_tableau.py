@@ -27,6 +27,7 @@ CLI::
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -637,6 +638,12 @@ def _export_fact_forecasts(ticker: str, fy_end_month: int = 12) -> pd.DataFrame:
     rows join 1:1 against dim_date (and against fact_financials' real reporting
     period_end). Adds a constant line_item='Revenue' column so forecasts can be
     joined to dim_metric the same way fact_financials rows are.
+
+    Each row carries ``forecast_run_date`` — the ISO date the model trained.
+    Newly-written parquets stamp this at write time (see
+    :func:`src.build_forecasts.write_forecast_parquet`); legacy parquets
+    without the column fall back to the file's mtime as a best-effort vintage
+    so older outputs still round-trip cleanly.
     """
     frames: list[pd.DataFrame] = []
     for fname in (
@@ -647,6 +654,16 @@ def _export_fact_forecasts(ticker: str, fy_end_month: int = 12) -> pd.DataFrame:
         if path.exists():
             df = pd.read_parquet(path)
             df["ticker"] = ticker
+            if "forecast_run_date" not in df.columns:
+                # Legacy parquet from before vintage stamping — fall back to
+                # the file's mtime so the column is never null in the export.
+                mtime_iso = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date().isoformat()
+                df["forecast_run_date"] = mtime_iso
+                logger.warning(
+                    "  %s missing forecast_run_date; backfilling from mtime=%s",
+                    fname,
+                    mtime_iso,
+                )
             frames.append(df)
             logger.info("  Loaded %s (%d rows)", fname, len(df))
         else:
@@ -665,15 +682,48 @@ def _export_fact_forecasts(ticker: str, fy_end_month: int = 12) -> pd.DataFrame:
                 "yhat_upper_80",
                 "yhat_lower_95",
                 "yhat_upper_95",
+                "forecast_run_date",
             ]
         )
 
     combined = pd.concat(frames, ignore_index=True)
-    combined["period_end"] = pd.to_datetime(combined["period_end"]).map(
-        lambda ts: _snap_to_fiscal_quarter_end(ts, fy_end_month)
+    combined["period_end"] = (
+        pd.to_datetime(combined["period_end"])
+        .map(lambda ts: _snap_to_fiscal_quarter_end(ts, fy_end_month))
+        .dt.strftime("%Y-%m-%d")
     )
     combined["line_item"] = "Revenue"
     return combined.sort_values(["model", "period_end"]).reset_index(drop=True)
+
+
+def _merge_forecast_vintages(
+    new_rows: pd.DataFrame,
+    csv_path: Path,
+) -> pd.DataFrame:
+    """Append-only merge of *new_rows* into the CSV at *csv_path*.
+
+    Reads the existing CSV (if any), concatenates ``new_rows``, drops full-row
+    duplicates so re-runs against the same vintage are idempotent, and sorts
+    by ``(forecast_run_date, model, period_end)`` for stable diffs. Returns
+    the merged frame; the caller is responsible for writing it.
+
+    If the CSV does not exist, ``new_rows`` is returned unchanged (apart from
+    sorting).
+    """
+    if csv_path.exists():
+        prev = pd.read_csv(csv_path)
+        merged = pd.concat([prev, new_rows], ignore_index=True)
+    else:
+        merged = new_rows.copy()
+
+    # Full-row dedup: identical vintages produce identical rows, so re-export
+    # is a no-op. Reset index because drop_duplicates preserves the original.
+    merged = merged.drop_duplicates().reset_index(drop=True)
+
+    sort_cols = [c for c in ("forecast_run_date", "model", "period_end") if c in merged.columns]
+    if sort_cols:
+        merged = merged.sort_values(sort_cols).reset_index(drop=True)
+    return merged
 
 
 def _export_dim_date(
@@ -896,13 +946,18 @@ def export(ticker: str | None = None) -> dict[str, Path]:
     outputs["fact_financials"] = p
     logger.info("  %d rows → %s", len(df_fin), p)
 
-    # ── fact_forecasts ─────────────────────────────────────────────────────────
+    # ── fact_forecasts (append-only) ───────────────────────────────────────────
+    # Re-runs accumulate vintaged snapshots in the CSV instead of overwriting,
+    # so we can later score "forecasts you've made vs how they landed". The
+    # full appended frame (not just newly-loaded rows) is passed downstream so
+    # dim_date covers every period across every vintage.
     logger.info("Exporting fact_forecasts...")
-    df_fcst = _export_fact_forecasts(resolved_ticker, fy_end_month=fy_end_month)
+    df_fcst_new = _export_fact_forecasts(resolved_ticker, fy_end_month=fy_end_month)
     p = _TABLEAU_DIR / "fact_forecasts.csv"
+    df_fcst = _merge_forecast_vintages(df_fcst_new, p)
     df_fcst.to_csv(p, index=False)
     outputs["fact_forecasts"] = p
-    logger.info("  %d rows → %s", len(df_fcst), p)
+    logger.info("  %d rows (%d new) → %s", len(df_fcst), len(df_fcst_new), p)
 
     # ── dim_date ───────────────────────────────────────────────────────────────
     logger.info("Exporting dim_date...")
