@@ -453,3 +453,202 @@ def test_years_filter(tmp_path: Path) -> None:
 
     max_fy = df["fiscal_year"].max()
     assert df["fiscal_year"].min() >= max_fy - 1
+
+
+# ── New concept ingestion (Week 2 expansion) ──────────────────────────────────
+# Each test exercises a single new concept with a minimal synthetic
+# companyfacts payload.  Debt, current assets/liab, shares outstanding, and
+# RPO are reported as instantaneous facts with quarter-end period_end values.
+
+
+def _instant_fact(
+    period_end: str, fy: int, fp: str, val: float, accn: str = "0000000-00-000001"
+) -> dict[str, Any]:
+    """One synthetic instantaneous (balance-sheet-style) fact row."""
+    return {
+        "end": period_end,
+        "fy": fy,
+        "fp": fp,
+        "val": val,
+        "accn": accn,
+        "form": "10-Q",
+        "filed": "2025-01-01",
+        "frame": f"CY{fy}{fp}I",
+    }
+
+
+def _facts_for_concept(
+    concept: str,
+    namespace: str = "us-gaap",
+    unit: str = "USD",
+    facts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build a minimal companyfacts JSON for a single concept under any unit/namespace."""
+    return {
+        "facts": {
+            namespace: {concept: {"units": {unit: facts or []}}},
+        }
+    }
+
+
+def _run_ingest_with_facts(
+    facts: dict[str, Any], ticker: str, cik_int: int, tmp_path: Path
+) -> pd.DataFrame:
+    """Run ingest() against a pre-built facts dict, pointing config/output at tmp_path."""
+    import yaml  # noqa: PLC0415
+
+    config = {
+        "cik": str(cik_int).zfill(10),
+        "cik_int": cik_int,
+        "ticker": ticker,
+        "name": f"Test {ticker}",
+        "fiscal_year_end_month": 7,
+        "fiscal_year_end_day": 31,
+        "sector_etf": "XLK",
+    }
+    config_path = tmp_path / "company.yaml"
+    with config_path.open("w") as fh:
+        yaml.dump(config, fh)
+
+    from unittest.mock import patch  # noqa: PLC0415
+
+    with (
+        patch("src.ingest_edgar._CONFIG_PATH", config_path),
+        patch("src.ingest_edgar._DATA_DIR", tmp_path),
+    ):
+        return ingest(ticker=ticker, years=10, facts_json=facts)
+
+
+def test_ingest_long_term_debt_noncurrent(tmp_path: Path) -> None:
+    """LongTermDebtNoncurrent → line_item 'LongTermDebt' with unit 'USD'."""
+    facts = _facts_for_concept(
+        "LongTermDebtNoncurrent",
+        facts=[
+            _instant_fact("2024-01-31", 2024, "Q2", 4_000_000_000.0),
+            _instant_fact("2024-04-30", 2024, "Q3", 4_100_000_000.0),
+            _instant_fact("2024-07-31", 2024, "Q4", 4_200_000_000.0),
+        ],
+    )
+    df = _run_ingest_with_facts(facts, "TEST", 9999991, tmp_path)
+    rows = df[df["line_item"] == "LongTermDebt"]
+    assert len(rows) >= 3, f"Expected ≥3 LongTermDebt rows, got {len(rows)}"
+    assert (rows["unit"] == "USD").all()
+    assert (rows["concept_used"] == "LongTermDebtNoncurrent").all()
+
+
+def test_ingest_long_term_debt_current(tmp_path: Path) -> None:
+    """LongTermDebtCurrent → line_item 'ShortTermDebt' with unit 'USD'."""
+    facts = _facts_for_concept(
+        "LongTermDebtCurrent",
+        facts=[
+            _instant_fact("2024-01-31", 2024, "Q2", 100_000_000.0),
+            _instant_fact("2024-04-30", 2024, "Q3", 120_000_000.0),
+            _instant_fact("2024-07-31", 2024, "Q4", 150_000_000.0),
+        ],
+    )
+    df = _run_ingest_with_facts(facts, "TEST", 9999992, tmp_path)
+    rows = df[df["line_item"] == "ShortTermDebt"]
+    assert len(rows) >= 3
+    assert (rows["unit"] == "USD").all()
+    assert (rows["concept_used"] == "LongTermDebtCurrent").all()
+
+
+def test_ingest_shares_outstanding_unit_shares(tmp_path: Path) -> None:
+    """EntityCommonStockSharesOutstanding (dei namespace) → 'SharesOutstanding'.
+
+    CRITICAL: unit MUST be 'shares', not 'USD' — Tableau formats share counts as
+    dollars otherwise.
+    """
+    facts = {
+        "facts": {
+            "dei": {
+                "EntityCommonStockSharesOutstanding": {
+                    "units": {
+                        "shares": [
+                            _instant_fact("2024-01-31", 2024, "Q2", 308_000_000.0),
+                            _instant_fact("2024-04-30", 2024, "Q3", 309_500_000.0),
+                            _instant_fact("2024-07-31", 2024, "Q4", 311_000_000.0),
+                        ]
+                    }
+                }
+            }
+        }
+    }
+    df = _run_ingest_with_facts(facts, "TEST", 9999993, tmp_path)
+    rows = df[df["line_item"] == "SharesOutstanding"]
+    assert len(rows) >= 3, f"Expected ≥3 SharesOutstanding rows, got {len(rows)}"
+    assert (
+        rows["unit"] == "shares"
+    ).all(), f"SharesOutstanding must use unit='shares', got {rows['unit'].unique().tolist()}"
+    assert (rows["concept_used"] == "EntityCommonStockSharesOutstanding").all()
+
+
+def test_ingest_diluted_shares_unit_shares(tmp_path: Path) -> None:
+    """WeightedAverageNumberOfDilutedSharesOutstanding → 'DilutedShares', unit='shares'."""
+    facts = _facts_for_concept(
+        "WeightedAverageNumberOfDilutedSharesOutstanding",
+        unit="shares",
+        facts=[
+            _q_fact("2024-01-31", 2024, "Q2", 320_000_000.0),
+            _q_fact("2024-04-30", 2024, "Q3", 322_500_000.0),
+            _q_fact("2024-07-31", 2024, "Q4", 325_000_000.0),
+        ],
+    )
+    df = _run_ingest_with_facts(facts, "TEST", 9999994, tmp_path)
+    rows = df[df["line_item"] == "DilutedShares"]
+    assert len(rows) >= 3, f"Expected ≥3 DilutedShares rows, got {len(rows)}"
+    assert (
+        rows["unit"] == "shares"
+    ).all(), f"DilutedShares must use unit='shares', got {rows['unit'].unique().tolist()}"
+    assert (rows["concept_used"] == "WeightedAverageNumberOfDilutedSharesOutstanding").all()
+
+
+def test_ingest_assets_current(tmp_path: Path) -> None:
+    """AssetsCurrent → 'CurrentAssets' with unit 'USD'."""
+    facts = _facts_for_concept(
+        "AssetsCurrent",
+        facts=[
+            _instant_fact("2024-01-31", 2024, "Q2", 7_500_000_000.0),
+            _instant_fact("2024-04-30", 2024, "Q3", 7_700_000_000.0),
+            _instant_fact("2024-07-31", 2024, "Q4", 8_100_000_000.0),
+        ],
+    )
+    df = _run_ingest_with_facts(facts, "TEST", 9999995, tmp_path)
+    rows = df[df["line_item"] == "CurrentAssets"]
+    assert len(rows) >= 3
+    assert (rows["unit"] == "USD").all()
+    assert (rows["concept_used"] == "AssetsCurrent").all()
+
+
+def test_ingest_liabilities_current(tmp_path: Path) -> None:
+    """LiabilitiesCurrent → 'CurrentLiabilities' with unit 'USD'."""
+    facts = _facts_for_concept(
+        "LiabilitiesCurrent",
+        facts=[
+            _instant_fact("2024-01-31", 2024, "Q2", 6_000_000_000.0),
+            _instant_fact("2024-04-30", 2024, "Q3", 6_200_000_000.0),
+            _instant_fact("2024-07-31", 2024, "Q4", 6_500_000_000.0),
+        ],
+    )
+    df = _run_ingest_with_facts(facts, "TEST", 9999996, tmp_path)
+    rows = df[df["line_item"] == "CurrentLiabilities"]
+    assert len(rows) >= 3
+    assert (rows["unit"] == "USD").all()
+    assert (rows["concept_used"] == "LiabilitiesCurrent").all()
+
+
+def test_ingest_remaining_performance_obligation(tmp_path: Path) -> None:
+    """RevenueRemainingPerformanceObligation → 'RPO' with unit 'USD'."""
+    facts = _facts_for_concept(
+        "RevenueRemainingPerformanceObligation",
+        facts=[
+            _instant_fact("2024-01-31", 2024, "Q2", 9_700_000_000.0),
+            _instant_fact("2024-04-30", 2024, "Q3", 10_200_000_000.0),
+            _instant_fact("2024-07-31", 2024, "Q4", 10_800_000_000.0),
+        ],
+    )
+    df = _run_ingest_with_facts(facts, "TEST", 9999997, tmp_path)
+    rows = df[df["line_item"] == "RPO"]
+    assert len(rows) >= 3
+    assert (rows["unit"] == "USD").all()
+    assert (rows["concept_used"] == "RevenueRemainingPerformanceObligation").all()

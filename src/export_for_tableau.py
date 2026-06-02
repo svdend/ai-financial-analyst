@@ -72,6 +72,18 @@ _BALANCE_SHEET_LINE_ITEMS: frozenset[str] = frozenset(
         "TotalAssets",
         "TotalLiabilities",
         "TotalEquity",
+        # Week-2 expansion — also instantaneous facts.  Debt and current-section
+        # items use the same FY-end → Q4 promotion path as the items above.
+        # SharesOutstanding (dei: EntityCommonStockSharesOutstanding) and RPO
+        # (us-gaap: RevenueRemainingPerformanceObligation) are also instant.
+        # DilutedShares is a *duration* (weighted-average) concept and so is
+        # intentionally NOT in this set — it follows the flow-item path.
+        "LongTermDebt",
+        "ShortTermDebt",
+        "SharesOutstanding",
+        "CurrentAssets",
+        "CurrentLiabilities",
+        "RPO",
     }
 )
 _QUARTER_FRAME_RE = r"^CY\d{4}Q[1-4]$"
@@ -204,6 +216,56 @@ _METRIC_META: list[dict[str, str]] = [
         "line_item": "TreasuryStockRepurchases",
         "label": "Treasury Stock Repurchases",
         "category": "Cash Flow",
+        "unit": "USD",
+    },
+    # Capital Structure (Week-2 expansion)
+    {
+        "line_item": "LongTermDebt",
+        "label": "Long-Term Debt",
+        "category": "Balance Sheet",
+        "unit": "USD",
+    },
+    {
+        "line_item": "ShortTermDebt",
+        "label": "Short-Term Debt",
+        "category": "Balance Sheet",
+        "unit": "USD",
+    },
+    # Share counts use unit='shares' so Tableau formats them as integers/counts
+    # rather than dollars.  EntityCommonStockSharesOutstanding is sourced from
+    # the EDGAR ``dei`` namespace; WeightedAverageNumberOfDilutedSharesOutstanding
+    # from ``us-gaap``.  Both arrive carrying unit='shares' from ingest.
+    {
+        "line_item": "SharesOutstanding",
+        "label": "Common Shares Outstanding",
+        "category": "Capital Structure",
+        "unit": "shares",
+    },
+    {
+        "line_item": "DilutedShares",
+        "label": "Diluted Weighted-Avg Shares",
+        "category": "Capital Structure",
+        "unit": "shares",
+    },
+    # Current section (Week-2 expansion)
+    {
+        "line_item": "CurrentAssets",
+        "label": "Current Assets",
+        "category": "Balance Sheet",
+        "unit": "USD",
+    },
+    {
+        "line_item": "CurrentLiabilities",
+        "label": "Current Liabilities",
+        "category": "Balance Sheet",
+        "unit": "USD",
+    },
+    # Remaining Performance Obligation — instantaneous backlog of contracted
+    # but unrecognised revenue.  Replaces deferred-revenue-only billings proxy.
+    {
+        "line_item": "RPO",
+        "label": "Remaining Performance Obligation",
+        "category": "Balance Sheet",
         "unit": "USD",
     },
     # Margins and growth rates are NOT exported as fact rows — they are

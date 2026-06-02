@@ -211,6 +211,34 @@ def test_dim_metric_covers_exported_actual_line_items() -> None:
     assert expected <= set(df["line_item"])
 
 
+def test_metric_meta_covers_new_line_items() -> None:
+    """Every new line_item from the Week-2 XBRL expansion needs metadata.
+
+    Each row must carry non-empty label/category/unit. ``SharesOutstanding`` and
+    ``DilutedShares`` MUST have ``unit='shares'`` (not USD) — otherwise Tableau
+    formats share counts as dollars.
+    """
+    df = _export_dim_metric()
+    expected_units = {
+        "LongTermDebt": "USD",
+        "ShortTermDebt": "USD",
+        "SharesOutstanding": "shares",
+        "DilutedShares": "shares",
+        "CurrentAssets": "USD",
+        "CurrentLiabilities": "USD",
+        "RPO": "USD",
+    }
+    by_line_item = {row["line_item"]: row for _, row in df.iterrows()}
+    for line_item, expected_unit in expected_units.items():
+        assert line_item in by_line_item, f"Missing dim_metric row for {line_item!r}"
+        row = by_line_item[line_item]
+        assert str(row["label"]).strip(), f"{line_item} has empty label"
+        assert str(row["category"]).strip(), f"{line_item} has empty category"
+        assert (
+            row["unit"] == expected_unit
+        ), f"{line_item} unit must be {expected_unit!r}, got {row['unit']!r}"
+
+
 # ── _export_dim_filing ────────────────────────────────────────────────────────
 
 
