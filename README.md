@@ -144,6 +144,8 @@ Three interactive dashboards (9 worksheets total); every revenue/value mark clic
 
 **Publishing is a manual operator step.** `make dashboard TICKER=PANW` writes Tableau-ready CSVs + a Hyper extract to `dashboard/tableau_data/`. Opening the workbook in Tableau Desktop and clicking *Publish* is the operator's job — there's no `make publish_tableau` target. (Tableau Server REST automation is feasible but credential-gated and was not worth building for a recruiter demo; see bead `dm0`.) Workbook source (diff-friendly XML) lives in `dashboard/tableau_workbook/PANW_Dashboard.twb`; the publish recipe is in `dashboard/Tableau_Setup.md`.
 
+**Workbook drift note.** The Tableau Public dashboard linked above reflects the v1 chart layout. The spec in `dashboard/Tableau_Setup.md` is ahead — it includes the new FCF Gantt waterfall (Sheet 5), GAAP-suffixed margin sheets, and `dim_metric.label`-driven legends. Operator checklist for catching the published view up: [`dashboard/TABLEAU_REPUBLISH_CHECKLIST.md`](dashboard/TABLEAU_REPUBLISH_CHECKLIST.md).
+
 ---
 
 ## LLM Commentary
