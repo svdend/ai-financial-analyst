@@ -842,6 +842,30 @@ def build(ticker: str | None = None) -> dict[str, Path]:
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
+
+_NOTEBOOKLM_UPLOAD_URL = "https://notebooklm.google.com"
+
+
+def _print_upload_instructions(bundle_dir: Path, files: dict[str, Path]) -> None:
+    """Print the bundle path + manual NotebookLM upload URL after build.
+
+    NotebookLM has no public API as of 2026 — the upload step is a manual
+    drag-drop in the browser. Surfacing the absolute bundle path and the
+    upload URL here keeps runtime output aligned with the README/HOW_TO_DEMO
+    framing and saves the operator a docs lookup.
+    """
+    print(f"\nBundle written to: {bundle_dir.resolve()}")
+    print(f"Files: {len(files)}")
+    for _label, p in sorted(files.items()):
+        size = p.stat().st_size if p.exists() else 0
+        print(f"  {p.name:<40}  {size:>8,} bytes")
+    print(
+        "\nNext step (manual): NotebookLM has no public API. "
+        f"Upload the bundle's files to {_NOTEBOOKLM_UPLOAD_URL} to create "
+        "the notebook."
+    )
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -855,11 +879,7 @@ if __name__ == "__main__":
 
     try:
         files = build(ticker=args.ticker)
-        print(f"\nBundle written to: {_BUNDLE_DIR}")
-        print(f"Files: {len(files)}")
-        for _label, p in sorted(files.items()):
-            size = p.stat().st_size if p.exists() else 0
-            print(f"  {p.name:<40}  {size:>8,} bytes")
+        _print_upload_instructions(_BUNDLE_DIR, files)
     except FileNotFoundError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)

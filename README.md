@@ -136,11 +136,13 @@ preliminary-to-final value drift is handled silently.
 
 Three interactive dashboards (9 worksheets total); every revenue/value mark click-throughs to its source SEC filing:
 
-- **Dashboard 1 — Overview:** Quarterly Revenue, Margins % (Gross/Operating), YoY Revenue Growth
-- **Dashboard 2 — FCF & Margins:** Income & FCF, Operating/CapEx/Free Cash Flow, all four margins (Gross / Operating / Net / FCF)
+- **Dashboard 1 — Overview:** Quarterly Revenue, Margins % (GAAP, Gross/Operating), YoY Revenue Growth
+- **Dashboard 2 — FCF & Margins:** Income & FCF, Operating/CapEx/Free Cash Flow, all four margins (GAAP — Gross / Operating / Net / FCF)
 - **Dashboard 3 — Operations:** Days Sales Outstanding, Revenue & Deferred Revenue (billings proxy), Rule of 40 (YoY growth % + FCF margin % against the 40% line)
 
-Regenerate the underlying data with `make dashboard TICKER=PANW`, then republish per `dashboard/Tableau_Setup.md`. Workbook source (diff-friendly XML) lives in `dashboard/tableau_workbook/PANW_Dashboard.twb`.
+> **All metrics are GAAP** (sourced from XBRL). Non-GAAP figures management guides on (op margin, FCF margin, NGS ARR) live in press-release narrative and are out of scope for this pipeline.
+
+**Publishing is a manual operator step.** `make dashboard TICKER=PANW` writes Tableau-ready CSVs + a Hyper extract to `dashboard/tableau_data/`. Opening the workbook in Tableau Desktop and clicking *Publish* is the operator's job — there's no `make publish_tableau` target. (Tableau Server REST automation is feasible but credential-gated and was not worth building for a recruiter demo; see bead `dm0`.) Workbook source (diff-friendly XML) lives in `dashboard/tableau_workbook/PANW_Dashboard.twb`; the publish recipe is in `dashboard/Tableau_Setup.md`.
 
 ---
 
@@ -180,7 +182,9 @@ Drivers are restricted to mechanical decompositions computable from input. Causa
 
 ## NotebookLM
 
-`make notebooklm` assembles a source bundle at `dashboard/notebooklm_bundle/` (10-K PDF, historical financials CSV with provenance, forecast summary, exec commentary, test + eval reports). Upload to NotebookLM and ask: *"For the $1.2B revenue figure in the commentary, what is the source filing?"*
+`make notebooklm` assembles a source bundle at `dashboard/notebooklm_bundle/` (10-K PDF, historical financials CSV with provenance, forecast summary, exec commentary, test + eval reports).
+
+**Upload is a manual operator step.** NotebookLM has no public API, so the pipeline stops at "bundle ready." The CLI prints the absolute bundle path and the [notebooklm.google.com](https://notebooklm.google.com) URL when it finishes; drag the bundle's files in there to create the notebook. Suggested prompts (e.g. *"For the $1.2B revenue figure in the commentary, what is the source filing?"*) are pre-written in `dashboard/notebooklm_bundle/README_FOR_NOTEBOOKLM.md`.
 
 ---
 
