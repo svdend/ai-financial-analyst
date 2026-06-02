@@ -9,11 +9,11 @@
 ## Suggested Prompts
 
 ### Provenance queries (live commentary required)
-_The bundled commentary file is `07_exec_commentary_SAMPLE.md` —
-an illustrative sample. Its accession numbers are NOT guaranteed to
-appear in `04_historical_financials.csv`. To run the provenance demo,
-first generate a live commentary: `make commentary TICKER=PANW LIVE=1`,
-then re-run `make notebooklm` and re-upload the bundle._
+_The bundled commentary file (`07_exec_commentary.md`) is currently
+an illustrative SAMPLE — the in-file banner flags it explicitly. Its
+accession numbers are NOT guaranteed to appear in
+`04_historical_financials.csv`. To run the provenance demo, set
+`ANTHROPIC_API_KEY` and re-run `make demo` (or `make commentary TICKER=PANW LIVE=1` followed by `make notebooklm`)._
 
 ### Financial analysis
 - *Summarize the company's revenue trajectory over the last 3 years.*
@@ -36,7 +36,7 @@ then re-run `make notebooklm` and re-upload the bundle._
 | 04_historical_financials.csv | Last 12 quarters with accession_no + filing_url |
 | 05_forecast_summary.md | Prophet + AutoARIMA + Lasso outputs with CIs |
 | 06_excel_model_summary.md | Base/Bull/Bear scenario description |
-| 07_exec_commentary_SAMPLE.md | LLM-generated variance commentary with citations (illustrative sample) |
+| 07_exec_commentary.md | LLM-generated variance commentary with citations (illustrative sample) |
 | 08_test_report.html | pytest coverage report |
 | 09_eval_report.md | Eval harness pass/fail (5 ground-truth scenarios) |
 
