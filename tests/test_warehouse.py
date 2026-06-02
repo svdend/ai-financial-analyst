@@ -196,6 +196,63 @@ def test_canonical_facts_deduplicates(tmp_path: Path) -> None:
     assert len(dup_check) == 0, f"Duplicate canonical facts found:\n{dup_check}"
 
 
+def test_warehouse_exposes_new_line_items(tmp_path: Path) -> None:
+    """New Week-2 line items must flow through v_canonical_facts.
+
+    Builds a synthetic warehouse from a parquet that includes one row per new
+    line_item (LongTermDebt, ShortTermDebt, SharesOutstanding, DilutedShares,
+    CurrentAssets, CurrentLiabilities, RPO) and verifies each appears in the
+    canonical view with the correct unit.
+    """
+    new_items: list[tuple[str, str, str]] = [
+        ("LongTermDebt", "LongTermDebtNoncurrent", "USD"),
+        ("ShortTermDebt", "LongTermDebtCurrent", "USD"),
+        ("SharesOutstanding", "EntityCommonStockSharesOutstanding", "shares"),
+        ("DilutedShares", "WeightedAverageNumberOfDilutedSharesOutstanding", "shares"),
+        ("CurrentAssets", "AssetsCurrent", "USD"),
+        ("CurrentLiabilities", "LiabilitiesCurrent", "USD"),
+        ("RPO", "RevenueRemainingPerformanceObligation", "USD"),
+    ]
+    rows: list[dict[str, Any]] = []
+    for line_item, concept, unit in new_items:
+        for fy, fp, end in _QUARTERS:
+            rows.append(
+                {
+                    "ticker": "TEST",
+                    "line_item": line_item,
+                    "concept_used": concept,
+                    "period_end": end,
+                    "period_type": "Q",
+                    "fiscal_year": fy,
+                    "fiscal_period": fp,
+                    "value": 1_000_000.0,
+                    "unit": unit,
+                    "accession_no": f"0000000000-{fy % 100:02d}-000001",
+                    "fact_id": f"{line_item}-{fy}-{fp}",
+                    "filing_url": f"https://example.test/{line_item}/",
+                    "form_type": "10-Q",
+                    "filed_date": end,
+                    "frame": f"CY{fy}{fp}",
+                }
+            )
+
+    db_path = _build_synthetic_warehouse(rows, tmp_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = con.execute("SELECT line_item, unit FROM v_canonical_facts").fetchdf()
+    finally:
+        con.close()
+    surfaced = set(df["line_item"].unique())
+    for line_item, _concept, expected_unit in new_items:
+        assert (
+            line_item in surfaced
+        ), f"{line_item} missing from v_canonical_facts; got {sorted(surfaced)}"
+        units = set(df.loc[df["line_item"] == line_item, "unit"].unique())
+        assert units == {
+            expected_unit
+        }, f"{line_item} should have unit {expected_unit!r}, got {units}"
+
+
 def test_key_metrics_quarterly_only(tmp_path: Path) -> None:
     """v_key_metrics must contain only quarterly rows."""
     db_path = _build_warehouse("panw_companyfacts.json", "PANW", 1327567, tmp_path)
@@ -314,9 +371,9 @@ def test_missing_quarters_flags_revenue_gap(tmp_path: Path) -> None:
     ]
     db_path = _build_synthetic_warehouse(rows, tmp_path)
     missing = _missing_quarters(db_path)
-    assert missing is not None and "FY2024Q2" in missing, (
-        f"expected FY2024Q2 in missing_quarters, got {missing!r}"
-    )
+    assert (
+        missing is not None and "FY2024Q2" in missing
+    ), f"expected FY2024Q2 in missing_quarters, got {missing!r}"
 
 
 def test_missing_quarters_ignores_inventory_gap(tmp_path: Path) -> None:
@@ -520,6 +577,6 @@ def test_fcf_bridge_skips_quarter_missing_required_component(tmp_path: Path) -> 
     finally:
         con.close()
     period_ends = [str(pe) for pe in df["period_end"].tolist()]
-    assert period_ends == ["2024-01-31"], (
-        f"Q2 should be skipped (missing CapEx), got period_ends={period_ends}"
-    )
+    assert period_ends == [
+        "2024-01-31"
+    ], f"Q2 should be skipped (missing CapEx), got period_ends={period_ends}"

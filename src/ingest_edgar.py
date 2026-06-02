@@ -108,6 +108,28 @@ CONCEPT_SYNONYMS: dict[str, list[str]] = {
         "PaymentsForRepurchaseOfCommonStock",
         "TreasuryStockValueAcquiredCostMethod",
     ],
+    # ── Week-2 expansion: debt, shares, current-section, RPO ──────────────────
+    # All instantaneous balance-sheet items except DilutedShares which is a
+    # weighted-average (duration) flow concept.
+    "LongTermDebt": ["LongTermDebtNoncurrent"],
+    "ShortTermDebt": ["LongTermDebtCurrent"],
+    "SharesOutstanding": ["EntityCommonStockSharesOutstanding"],
+    "DilutedShares": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
+    "CurrentAssets": ["AssetsCurrent"],
+    "CurrentLiabilities": ["LiabilitiesCurrent"],
+    "RPO": ["RevenueRemainingPerformanceObligation"],
+}
+
+# ── Per-line-item unit and namespace overrides ────────────────────────────────
+# Default for an unlisted line_item: ("USD", "us-gaap").  A line_item appears
+# here only when its XBRL fact lives in a different unit (e.g. share counts)
+# or namespace (e.g. ``dei`` for Document Entity Information concepts).
+_LINE_ITEM_UNIT: dict[str, str] = {
+    "SharesOutstanding": "shares",
+    "DilutedShares": "shares",
+}
+_LINE_ITEM_NAMESPACE: dict[str, str] = {
+    "SharesOutstanding": "dei",
 }
 
 
@@ -209,11 +231,18 @@ def _extract_line_item(
     cik_int: int,
     concepts: list[str],
     min_fiscal_year: int,
+    unit: str = "USD",
+    namespace: str = "us-gaap",
 ) -> list[dict[str, Any]]:
     """Extract rows for one canonical line item from a companyfacts JSON dict.
 
-    Tries concepts in order; the first concept present in the ``us-gaap``
-    namespace with ``USD`` unit data wins.  Logs which concept matched.
+    Tries concepts in order; the first concept present in *namespace* with
+    *unit* data wins.  Logs which concept matched.
+
+    Most line items live in the ``us-gaap`` namespace under ``USD`` (the
+    defaults).  Share counts use ``shares``.  ``EntityCommonStockSharesOutstanding``
+    lives in the ``dei`` namespace (Document Entity Information) — pass
+    ``namespace='dei'`` for those.
 
     Missing ``frame`` fields are stored as empty strings (not NULL) so that
     downstream SQL GROUP BY and QUALIFY clauses work uniformly.
@@ -225,11 +254,13 @@ def _extract_line_item(
         cik_int:         Integer CIK for constructing filing URLs.
         concepts:        Ordered list of XBRL concept synonyms to try.
         min_fiscal_year: Earliest fiscal year to retain.
+        unit:            XBRL unit key (e.g. ``"USD"`` or ``"shares"``).
+        namespace:       XBRL namespace (e.g. ``"us-gaap"`` or ``"dei"``).
 
     Returns:
         List of row dicts ready for DataFrame construction.
     """
-    us_gaap: dict[str, Any] = facts_json.get("facts", {}).get("us-gaap", {})
+    ns_facts: dict[str, Any] = facts_json.get("facts", {}).get(namespace, {})
 
     # Among the configured concept synonyms, prefer the one with the most
     # *recent* quarterly coverage (quarterly facts within the keep window).
@@ -247,14 +278,14 @@ def _extract_line_item(
     # Ties broken by list order (stable, deterministic).
     candidates: list[tuple[str, list[dict[str, Any]], int]] = []
     for concept in concepts:
-        raw_usd = us_gaap.get(concept, {}).get("units", {}).get("USD")
-        if not raw_usd:
+        raw_entries = ns_facts.get(concept, {}).get("units", {}).get(unit)
+        if not raw_entries:
             continue
         # Score = number of quarterly facts within the keep window
         # (fiscal_year >= min_fiscal_year AND fp ∈ {Q1..Q4}).
         in_window = sum(
             1
-            for e in raw_usd
+            for e in raw_entries
             if str(e.get("fp", "")) in _VALID_FP
             and isinstance(e.get("fy"), int)
             and int(e["fy"]) >= min_fiscal_year
@@ -262,7 +293,7 @@ def _extract_line_item(
         )
         if in_window == 0:
             continue
-        candidates.append((concept, raw_usd, in_window))
+        candidates.append((concept, raw_entries, in_window))
 
     if not candidates:
         logger.warning("  %s: no matching concept found (tried: %s)", line_item, concepts)
@@ -270,7 +301,7 @@ def _extract_line_item(
 
     # Sort by in-window quarterly count desc; stable sort preserves list-order tiebreak.
     candidates.sort(key=lambda c: -c[2])
-    used_concept, usd_entries, top_count = candidates[0]
+    used_concept, unit_entries, top_count = candidates[0]
 
     # If two concepts both have >2 quarters of in-window coverage, that's a
     # concept-switch event we want to surface in logs — not silently mask.
@@ -284,10 +315,10 @@ def _extract_line_item(
             ", ".join(f"{c} ({n})" for c, n in other_substantive),
         )
 
-    logger.info("  %s → %s (%d raw entries)", line_item, used_concept, len(usd_entries))
+    logger.info("  %s → %s (%d raw entries)", line_item, used_concept, len(unit_entries))
 
     rows: list[dict[str, Any]] = []
-    for entry in usd_entries:
+    for entry in unit_entries:
         fp = str(entry.get("fp", ""))
         if fp not in _VALID_FP:
             continue
@@ -320,7 +351,7 @@ def _extract_line_item(
                 "fiscal_year": fiscal_year,
                 "fiscal_period": fp,
                 "value": float(raw_val),
-                "unit": "USD",
+                "unit": unit,
                 "accession_no": accn,
                 "fact_id": _fact_id(ticker, used_concept, period_end, fp, accn),
                 "filing_url": _filing_url(cik_int, accn),
@@ -400,6 +431,8 @@ def ingest(
             cik_int,
             concepts,
             min_fiscal_year=1990,  # broad; will filter by `years` below
+            unit=_LINE_ITEM_UNIT.get(line_item, "USD"),
+            namespace=_LINE_ITEM_NAMESPACE.get(line_item, "us-gaap"),
         )
         all_rows.extend(rows)
 
