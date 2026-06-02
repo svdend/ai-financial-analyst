@@ -94,7 +94,9 @@ def select_models() -> dict[str, str]:
     try:
         client = anthropic.Anthropic()
         # client.models.list() returns a paginated SyncPage; list() exhausts it.
-        all_models: list[Any] = list(client.models.list())
+        # The attr-defined ignore covers anthropic 0.40.0, whose py.typed stubs
+        # do not surface `models` even though the runtime client does.
+        all_models: list[Any] = list(client.models.list())  # type: ignore[attr-defined]
         model_ids: list[str] = [m.id for m in all_models if isinstance(getattr(m, "id", None), str)]
 
         planner = _best_match(model_ids, planner_families)

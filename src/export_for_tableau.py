@@ -801,8 +801,9 @@ def _try_write_hyper(tableau_dir: Path, ticker: str) -> None:
                 df = pd.read_csv(fin_csv)
                 with Inserter(con, schema) as ins:
                     for _, row in df.iterrows():
+                        raw_period_end = row.get("period_end")
                         period_end_ts = pd.to_datetime(
-                            row.get("period_end"),
+                            "" if raw_period_end is None else str(raw_period_end),
                             errors="coerce",
                         )
                         period_end = None if pd.isna(period_end_ts) else period_end_ts.date()
