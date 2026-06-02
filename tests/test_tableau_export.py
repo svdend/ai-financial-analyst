@@ -306,9 +306,9 @@ def test_fact_financials_supports_billings_calc(tmp_path: Path) -> None:
         con.close()
 
     assert "Revenue" in df["line_item"].values, "Revenue rows missing — Billings calc cannot run."
-    assert "DeferredRevenue" in df["line_item"].values, (
-        "DeferredRevenue rows missing — Billings calc cannot run."
-    )
+    assert (
+        "DeferredRevenue" in df["line_item"].values
+    ), "DeferredRevenue rows missing — Billings calc cannot run."
 
     rev = (
         df.loc[df["line_item"] == "Revenue", ["period_end", "value"]]
@@ -335,15 +335,15 @@ def test_fact_financials_supports_billings_calc(tmp_path: Path) -> None:
 
     # Ground truth from EDGAR companyfacts (CIK 1327567) — values match the
     # numbers PANW filed in its 10-Q for Q2 FY2024 (filed 2024-02-21).
-    assert abs(rev_q2 - 1_978_000_000.0) < 1.0, (
-        f"PANW Q2 FY24 Revenue should be $1,978M; got ${rev_q2:,.0f}"
-    )
-    assert abs(dr_q2 - 4_918_100_000.0) < 1.0, (
-        f"PANW Q2 FY24 DefRev (current) should be $4,918.1M; got ${dr_q2:,.0f}"
-    )
-    assert abs(dr_q1 - 4_732_000_000.0) < 1.0, (
-        f"PANW Q1 FY24 DefRev (current) should be $4,732.0M; got ${dr_q1:,.0f}"
-    )
+    assert (
+        abs(rev_q2 - 1_978_000_000.0) < 1.0
+    ), f"PANW Q2 FY24 Revenue should be $1,978M; got ${rev_q2:,.0f}"
+    assert (
+        abs(dr_q2 - 4_918_100_000.0) < 1.0
+    ), f"PANW Q2 FY24 DefRev (current) should be $4,918.1M; got ${dr_q2:,.0f}"
+    assert (
+        abs(dr_q1 - 4_732_000_000.0) < 1.0
+    ), f"PANW Q1 FY24 DefRev (current) should be $4,732.0M; got ${dr_q1:,.0f}"
 
     delta_dr = dr_q2 - dr_q1
     billings_derived = rev_q2 + delta_dr
@@ -351,15 +351,15 @@ def test_fact_financials_supports_billings_calc(tmp_path: Path) -> None:
 
     # Hand-computed: $1,978M + ($4,918.1M − $4,732.0M) = $2,164.1M
     expected_billings = 2_164_100_000.0
-    assert abs(billings_derived - expected_billings) < 1.0, (
-        f"Billings (Derived) for Q2 FY24 should be $2,164.1M; got ${billings_derived:,.0f}"
-    )
+    assert (
+        abs(billings_derived - expected_billings) < 1.0
+    ), f"Billings (Derived) for Q2 FY24 should be $2,164.1M; got ${billings_derived:,.0f}"
 
     # Corrected formula minus the buggy ΔDefRev-only proxy equals Revenue —
     # the magnitude of understatement this PR removes.
-    assert abs((billings_derived - billings_buggy) - rev_q2) < 1.0, (
-        "Billings (Derived) - Billings (buggy ΔDefRev-only) must equal Revenue."
-    )
+    assert (
+        abs((billings_derived - billings_buggy) - rev_q2) < 1.0
+    ), "Billings (Derived) - Billings (buggy ΔDefRev-only) must equal Revenue."
 
 
 def test_fact_financials_promotes_fy_balance_rows_to_q4(tmp_path: Path) -> None:
@@ -395,31 +395,31 @@ def test_fact_financials_promotes_fy_balance_rows_to_q4(tmp_path: Path) -> None:
         "DeferredRevenue FY-end balance at 2023-07-31 missing from fact_financials.\n"
         "The 10-K FY-end balance is the Q4 closing balance and must surface."
     )
-    assert len(fy23_def_rev) == 1, (
-        f"Expected exactly one DeferredRevenue row at 2023-07-31; got {len(fy23_def_rev)}"
-    )
+    assert (
+        len(fy23_def_rev) == 1
+    ), f"Expected exactly one DeferredRevenue row at 2023-07-31; got {len(fy23_def_rev)}"
     row = fy23_def_rev.iloc[0]
-    assert row["fiscal_period"] == "Q4", (
-        f"FY-end balance at 2023-07-31 should be relabeled Q4; got {row['fiscal_period']}"
-    )
+    assert (
+        row["fiscal_period"] == "Q4"
+    ), f"FY-end balance at 2023-07-31 should be relabeled Q4; got {row['fiscal_period']}"
     assert row["period_type"] == "Q", (
         f"FY-end balance at 2023-07-31 should carry period_type='Q' after promotion; "
         f"got {row['period_type']}"
     )
-    assert int(row["fiscal_year"]) == 2023, (
-        f"FY-end balance at 2023-07-31 should carry fiscal_year=2023; got {row['fiscal_year']}"
-    )
+    assert (
+        int(row["fiscal_year"]) == 2023
+    ), f"FY-end balance at 2023-07-31 should carry fiscal_year=2023; got {row['fiscal_year']}"
     assert abs(float(row["value"]) - 4_674_600_000.0) < 1.0, (
         f"PANW FY23 DefRev should be $4,674.6M (10-K filed 2023-09-01); "
         f"got ${float(row['value']):,.0f}"
     )
     # Provenance must trace back to the 10-K, not be invented.
-    assert row["accession_no"] == "0001327567-23-000024", (
-        f"Provenance lost on promoted FY row; got accession_no={row['accession_no']!r}"
-    )
-    assert row["form_type"] == "10-K", (
-        f"Promoted FY row must keep form_type='10-K'; got {row['form_type']!r}"
-    )
+    assert (
+        row["accession_no"] == "0001327567-23-000024"
+    ), f"Provenance lost on promoted FY row; got accession_no={row['accession_no']!r}"
+    assert (
+        row["form_type"] == "10-K"
+    ), f"Promoted FY row must keep form_type='10-K'; got {row['form_type']!r}"
 
     # Flow items (Revenue, NetIncome) must NOT pick up FY rows — Q4 standalone
     # for flows is computed by subtraction elsewhere.
@@ -474,9 +474,9 @@ def test_fact_fcf_bridge_export_emits_seven_components_per_quarter(tmp_path: Pat
             "fact_id",
             "filing_url",
         }
-        assert expected_cols <= set(df.columns), (
-            f"empty bridge frame missing columns: {expected_cols - set(df.columns)}"
-        )
+        assert expected_cols <= set(
+            df.columns
+        ), f"empty bridge frame missing columns: {expected_cols - set(df.columns)}"
         return
     # Group by period and assert seven components.
     counts = df.groupby("period_end").size()
@@ -621,9 +621,9 @@ def test_fact_financials_no_ytd_duplicates(tmp_path: Path) -> None:
         subset=["line_item", "period_end", "fiscal_year", "fiscal_period"], keep=False
     )
     dup_rows = df[dupes][["line_item", "period_end", "fiscal_period", "value"]]
-    assert len(dup_rows) == 0, (
-        f"YTD duplicates still present after deduplication:\n{dup_rows.to_string()}"
-    )
+    assert (
+        len(dup_rows) == 0
+    ), f"YTD duplicates still present after deduplication:\n{dup_rows.to_string()}"
 
 
 def test_fact_financials_unique_per_period_end(tmp_path: Path) -> None:
@@ -644,9 +644,9 @@ def test_fact_financials_unique_per_period_end(tmp_path: Path) -> None:
 
     dupes = df.duplicated(subset=["ticker", "line_item", "period_end"], keep=False)
     dup_rows = df[dupes][["line_item", "period_end", "fiscal_year", "fiscal_period", "value"]]
-    assert len(dup_rows) == 0, (
-        f"Duplicate (ticker, line_item, period_end) rows in export:\n{dup_rows.to_string()}"
-    )
+    assert (
+        len(dup_rows) == 0
+    ), f"Duplicate (ticker, line_item, period_end) rows in export:\n{dup_rows.to_string()}"
 
 
 def _two_cashflow_rows() -> pd.DataFrame:
@@ -1705,8 +1705,9 @@ def test_fact_forecasts_dates_snapped_to_fiscal_quarter_end(tmp_path: Path) -> N
         df = _export_fact_forecasts("TEST", fy_end_month=7)
 
     assert (df["line_item"] == "Revenue").all()
-    expected = pd.to_datetime(["2026-04-30", "2026-07-31", "2026-04-30", "2027-01-31"])
-    assert sorted(df["period_end"].tolist()) == sorted(expected.tolist())
+    # period_end is now ISO YYYY-MM-DD strings (vintage-stable for CSV diffs).
+    expected = ["2026-04-30", "2026-07-31", "2026-04-30", "2027-01-31"]
+    assert sorted(df["period_end"].tolist()) == sorted(expected)
 
 
 def test_fact_forecasts_join_to_dim_date_is_one_to_one(tmp_path: Path) -> None:
@@ -1757,6 +1758,123 @@ def test_fact_forecasts_join_to_dim_date_is_one_to_one(tmp_path: Path) -> None:
         f"{unmatched[['model', 'period_end']].to_dict('records')}"
     )
     assert (fcst["line_item"] == "Revenue").all()
+
+
+# ── forecast_run_date vintage column ──────────────────────────────────────────
+
+
+def _stamped_forecast_stub(run_date: str) -> pd.DataFrame:
+    """Produce a parquet-shaped forecast frame with an explicit vintage stamp."""
+    return pd.DataFrame(
+        {
+            "model": ["prophet"] * 4,
+            "period_end": pd.date_range("2026-04-30", periods=4, freq="QE"),
+            "yhat": [1e9, 1.1e9, 1.2e9, 1.3e9],
+            "yhat_lower_80": [0.9e9] * 4,
+            "yhat_upper_80": [1.1e9] * 4,
+            "yhat_lower_95": [0.8e9] * 4,
+            "yhat_upper_95": [1.2e9] * 4,
+            "forecast_run_date": [run_date] * 4,
+        }
+    )
+
+
+def test_forecast_run_date_column_present_in_export(tmp_path: Path) -> None:
+    """Synthetic vintaged parquet → exported frame carries forecast_run_date."""
+    stub = _stamped_forecast_stub("2026-06-01")
+    stub.to_parquet(tmp_path / "TEST_baseline_forecasts.parquet", index=False)
+
+    with patch("src.export_for_tableau._MODELS_DIR", tmp_path):
+        df = _export_fact_forecasts("TEST")
+
+    assert (
+        "forecast_run_date" in df.columns
+    ), "forecast_run_date must propagate through _export_fact_forecasts"
+    assert df["forecast_run_date"].notna().all()
+    # Every value must be an ISO YYYY-MM-DD string — keeps CSV diffs tight.
+    for v in df["forecast_run_date"].unique():
+        assert isinstance(v, str), f"expected str, got {type(v).__name__}: {v!r}"
+        assert len(v) == 10 and v[4] == "-" and v[7] == "-", f"not ISO: {v!r}"
+    assert (df["forecast_run_date"] == "2026-06-01").all()
+
+
+def test_forecast_csv_appends_new_vintage(tmp_path: Path) -> None:
+    """fact_forecasts.csv must accumulate vintages across re-exports."""
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    tableau_dir = tmp_path / "tableau_data"
+    tableau_dir.mkdir()
+    config_path = tmp_path / "company.yaml"
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+
+    # Pre-seed fact_forecasts.csv with an older vintage row (as if a prior
+    # export had already happened months ago).
+    old_vintage = pd.DataFrame(
+        {
+            "model": ["prophet"],
+            "period_end": ["2026-04-30"],
+            "yhat": [1e9],
+            "yhat_lower_80": [0.9e9],
+            "yhat_upper_80": [1.1e9],
+            "yhat_lower_95": [0.8e9],
+            "yhat_upper_95": [1.2e9],
+            "ticker": ["PANW"],
+            "line_item": ["Revenue"],
+            "forecast_run_date": ["2026-01-15"],
+        }
+    )
+    old_vintage.to_csv(tableau_dir / "fact_forecasts.csv", index=False)
+
+    # New forecast parquet with a newer vintage stamp.
+    new_stub = _stamped_forecast_stub("2026-06-01")
+    new_stub.to_parquet(models_dir / "PANW_baseline_forecasts.parquet", index=False)
+
+    with (
+        patch("src.export_for_tableau._CONFIG_PATH", config_path),
+        patch("src.export_for_tableau._PROCESSED_DIR", tmp_path),
+        patch("src.export_for_tableau._MODELS_DIR", models_dir),
+        patch("src.export_for_tableau._TABLEAU_DIR", tableau_dir),
+        patch("src.export_for_tableau._DASHBOARD_DIR", tmp_path),
+    ):
+        export(ticker="PANW")
+
+    final = pd.read_csv(tableau_dir / "fact_forecasts.csv")
+    vintages = set(final["forecast_run_date"].unique())
+    assert "2026-01-15" in vintages, "older vintage row must survive re-export"
+    assert "2026-06-01" in vintages, "newly-exported vintage must be appended"
+
+
+def test_forecast_csv_idempotent_on_same_vintage(tmp_path: Path) -> None:
+    """Re-running export with the same parquet must produce the same CSV."""
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    tableau_dir = tmp_path / "tableau_data"
+    config_path = tmp_path / "company.yaml"
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+
+    stub = _stamped_forecast_stub("2026-06-01")
+    stub.to_parquet(models_dir / "PANW_baseline_forecasts.parquet", index=False)
+
+    patches = (
+        patch("src.export_for_tableau._CONFIG_PATH", config_path),
+        patch("src.export_for_tableau._PROCESSED_DIR", tmp_path),
+        patch("src.export_for_tableau._MODELS_DIR", models_dir),
+        patch("src.export_for_tableau._TABLEAU_DIR", tableau_dir),
+        patch("src.export_for_tableau._DASHBOARD_DIR", tmp_path),
+    )
+
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        export(ticker="PANW")
+    first = (tableau_dir / "fact_forecasts.csv").read_bytes()
+
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        export(ticker="PANW")
+    second = (tableau_dir / "fact_forecasts.csv").read_bytes()
+
+    assert first == second, (
+        "Re-export with unchanged parquet must yield byte-identical CSV "
+        "(append-only with full-row dedup)."
+    )
 
 
 # ── Full export integration ────────────────────────────────────────────────────
