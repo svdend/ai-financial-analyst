@@ -4,6 +4,11 @@
 > **The SEC data here is already public, but if you ever extend this project to**
 > **non-public sources, do NOT publish to Tableau Public.**
 
+> **All metrics shown are GAAP unless otherwise noted.** XBRL is GAAP-only;
+> the non-GAAP figures management guides on (op margin, FCF margin, NGS ARR)
+> live in press-release narrative and are out of scope for this pipeline
+> (see bead `x58` for the press-release ingest).
+
 ---
 
 ## 1. File Overview
@@ -76,7 +81,7 @@ is built from `fact_financials` joined to the dimension tables.
 - Click-through provenance is direct here — every Revenue mark is a single
   XBRL fact with a single accession.
 
-### Sheet 2: PANW Margins %
+### Sheet 2: PANW Margins % (GAAP)
 - Rows: gross margin %, operating margin % (two measures on the same axis)
 - Columns: `period_end` (continuous, quarterly)
 - Marks: Line, one colour per margin type
@@ -86,6 +91,10 @@ is built from `fact_financials` joined to the dimension tables.
   Operating Margin % = SUM([OperatingIncome]) / SUM([Revenue])
   ```
 - Format axis as percentage; reference lines optional.
+- Tooltip caveat: "GAAP per XBRL; non-GAAP not exposed" — the figures
+  management guides on (non-GAAP op margin ~28%+, FCF margin ~38%+) come
+  from press-release narrative, not structured XBRL, and ingest of those
+  is tracked separately (bead `x58`).
 - Provenance: each margin computes from two source rows (numerator and
   denominator) — show both accession_no values in the mark's tooltip.
 
@@ -247,12 +256,14 @@ A quarter missing any of NI/D&A/SBC/OCF/CapEx is **excluded** from the
 bridge entirely (the view's `complete` CTE drops it). Don't fill zeros — the
 gap is real and `v_data_quality.missing_quarters` flags it elsewhere.
 
-### Sheet 6: Profitability Stack (replaces Sheet 2)
+### Sheet 6: Profitability Stack (GAAP, replaces Sheet 2)
 
-Multi-line chart of three margins on a shared % axis. **Replaces** Sheet 2
-(`PANW Margins %`) — same calc fields, but adds FCF Margin and a 30%
-Operating Margin reference line. Drop Sheet 2 from the dashboard once Sheet 6
-is wired up.
+Multi-line chart of three GAAP margins on a shared % axis. **Replaces**
+Sheet 2 (`PANW Margins % (GAAP)`) — same calc fields, but adds FCF
+Margin and a 30% Operating Margin reference line. Drop Sheet 2 from the
+dashboard once Sheet 6 is wired up.
+
+Tooltip caveat (every mark): "GAAP per XBRL; non-GAAP not exposed".
 
 - Rows: `[Gross Margin %]`, `[Operating Margin %]`, `[FCF Margin %]` (use
   Measure Names / Measure Values to put three on one axis)

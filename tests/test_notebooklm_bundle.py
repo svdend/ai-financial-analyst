@@ -52,7 +52,7 @@ def test_excel_summary_filename_matches_excel_writer(tmp_path: Path) -> None:
         summary = _build_excel_model_summary(ticker)
 
     assert "not found" not in summary, (
-        "Bundle could not find the Excel file at the canonical path; " f"summary said:\n{summary}"
+        f"Bundle could not find the Excel file at the canonical path; summary said:\n{summary}"
     )
     assert expected_name in summary
 
@@ -212,9 +212,9 @@ def test_sample_commentary_renamed_and_banner_added(
 
     readme = (bundle_dir / "README_FOR_NOTEBOOKLM.md").read_text(encoding="utf-8")
     assert "07_exec_commentary.md" in readme
-    assert (
-        "live commentary required" in readme.lower()
-    ), "README should suppress the provenance demo prompt for sample commentary"
+    assert "live commentary required" in readme.lower(), (
+        "README should suppress the provenance demo prompt for sample commentary"
+    )
 
 
 # ── Live-vs-SAMPLE gating on ANTHROPIC_API_KEY ────────────────────────────────
@@ -335,9 +335,48 @@ def test_bundle_calls_live_generator_when_api_key_present(
     body = bundled.read_text(encoding="utf-8")
     # Live content (not the SAMPLE) is what landed in the bundle.
     assert "Live Commentary" in body
-    assert (
-        "SAMPLE — illustrative only" not in body
-    ), "Live commentary should not carry the SAMPLE banner"
+    assert "SAMPLE — illustrative only" not in body, (
+        "Live commentary should not carry the SAMPLE banner"
+    )
+
+
+def test_print_upload_instructions_includes_path_and_url(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI footer must surface both the bundle path and the manual upload URL.
+
+    The pipeline writes the bundle but does not upload it — NotebookLM has no
+    public API. The operator step is to drag the bundle's files into
+    notebooklm.google.com. README/HOW_TO_DEMO point at this; the runtime
+    output must back them up so the demo isn't a copy-paste game with the
+    docs.
+    """
+    from src.build_notebooklm_bundle import _print_upload_instructions
+
+    files = {
+        "company_overview": tmp_path / "01_overview.md",
+        "exec_commentary": tmp_path / "07_exec_commentary.md",
+    }
+    for path in files.values():
+        path.write_text("stub", encoding="utf-8")
+
+    _print_upload_instructions(tmp_path, files)
+    captured = capsys.readouterr().out
+
+    # Absolute bundle path so the operator can copy-paste into Finder/explorer.
+    assert str(tmp_path.resolve()) in captured, (
+        "Upload instructions must include the absolute bundle path."
+    )
+    # Manual upload destination — NotebookLM has no API.
+    assert "https://notebooklm.google.com" in captured, (
+        "Upload instructions must point at notebooklm.google.com so the "
+        "operator knows where to drop the bundle."
+    )
+    # Honest framing: this is a manual step, not an automated one.
+    assert "manual" in captured.lower(), (
+        "The footer must call out that upload is a manual operator step "
+        "(NotebookLM has no public API) so docs and runtime stay aligned."
+    )
 
 
 def test_bundle_log_message_distinguishes_sample_from_live(
@@ -360,9 +399,9 @@ def test_bundle_log_message_distinguishes_sample_from_live(
     with caplog.at_level(logging.INFO, logger=build_notebooklm_bundle.logger.name):
         build_notebooklm_bundle.build(ticker="TEST")
     fallback_messages = [r.getMessage() for r in caplog.records]
-    assert any(
-        expected_fallback in msg for msg in fallback_messages
-    ), f"Expected fallback log line not emitted. Got:\n{fallback_messages}"
+    assert any(expected_fallback in msg for msg in fallback_messages), (
+        f"Expected fallback log line not emitted. Got:\n{fallback_messages}"
+    )
     assert not any("Live commentary regenerated" in msg for msg in fallback_messages)
 
     # Branch B — key present, mocked generator.
@@ -383,9 +422,9 @@ def test_bundle_log_message_distinguishes_sample_from_live(
     with caplog.at_level(logging.INFO, logger=build_notebooklm_bundle.logger.name):
         build_notebooklm_bundle.build(ticker="TEST")
     live_messages = [r.getMessage() for r in caplog.records]
-    assert any(
-        "Live commentary regenerated" in msg for msg in live_messages
-    ), f"Expected live-regen log line not emitted. Got:\n{live_messages}"
+    assert any("Live commentary regenerated" in msg for msg in live_messages), (
+        f"Expected live-regen log line not emitted. Got:\n{live_messages}"
+    )
     assert not any(expected_fallback in msg for msg in live_messages)
 
 
@@ -499,10 +538,10 @@ def test_forecast_summary_renders_table_without_tabulate(tmp_path: Path) -> None
     with patch.object(build_notebooklm_bundle, "_MODELS_DIR", tmp_path):
         md = _build_forecast_summary("TEST")
 
-    assert (
-        "Missing optional dependency" not in md
-    ), f"Forecast summary leaked the tabulate-missing stub:\n{md}"
+    assert "Missing optional dependency" not in md, (
+        f"Forecast summary leaked the tabulate-missing stub:\n{md}"
+    )
     # The header row of the rendered table must be present.
-    assert (
-        "| model | period_end | yhat | yhat_lower_80 | yhat_upper_80 |" in md
-    ), f"Expected markdown table header not found in output:\n{md}"
+    assert "| model | period_end | yhat | yhat_lower_80 | yhat_upper_80 |" in md, (
+        f"Expected markdown table header not found in output:\n{md}"
+    )

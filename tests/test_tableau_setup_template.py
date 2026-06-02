@@ -96,6 +96,46 @@ def test_billings_calc_includes_revenue_term(tmp_path: Path) -> None:
     )
 
 
+def test_margin_sheets_carry_gaap_suffix(tmp_path: Path) -> None:
+    """Every margin sheet title in the rendered doc must carry the (GAAP) suffix.
+
+    XBRL is GAAP-only; PANW's earnings narrative is non-GAAP. Margin sheets
+    without the GAAP qualifier mislead an FP&A reviewer who expects the
+    non-GAAP figures management actually guides on.
+    """
+    _write_tableau_setup_md(tmp_path, "PANW")
+    body = (tmp_path / "Tableau_Setup.md").read_text(encoding="utf-8")
+
+    # Sheet 2 — primary margins sheet.
+    assert "### Sheet 2: PANW Margins % (GAAP)" in body, (
+        "Sheet 2 title must carry the (GAAP) suffix to disambiguate from "
+        "the non-GAAP figures management guides on."
+    )
+    # Sheet 6 — replacement multi-line profitability stack.
+    assert "### Sheet 6: Profitability Stack (GAAP, replaces Sheet 2)" in body, (
+        "Sheet 6 title must carry the (GAAP) qualifier — it shows three "
+        "GAAP margins on a shared axis."
+    )
+    # Inline tooltip / caveat note that the metrics are GAAP-only.
+    assert "GAAP per XBRL; non-GAAP not exposed" in body, (
+        "Margin sheets must include a tooltip/caveat noting GAAP-only "
+        "sourcing so the reviewer doesn't misread these as non-GAAP figures."
+    )
+
+
+def test_doc_carries_gaap_footer(tmp_path: Path) -> None:
+    """The doc must include a footer line stating all metrics are GAAP unless noted.
+
+    Single source of truth that any reviewer eyeballing the doc sees once.
+    """
+    _write_tableau_setup_md(tmp_path, "PANW")
+    body = (tmp_path / "Tableau_Setup.md").read_text(encoding="utf-8")
+    assert "All metrics shown are GAAP unless otherwise noted" in body, (
+        "Tableau_Setup.md must include a global GAAP footer/caption so a "
+        "reviewer is never left guessing which basis a margin reflects."
+    )
+
+
 def test_renderer_rejects_unknown_placeholder(tmp_path: Path) -> None:
     """A future template edit that introduces {foo} without renderer support must fail loudly.
 
