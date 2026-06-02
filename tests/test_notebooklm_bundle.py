@@ -51,9 +51,9 @@ def test_excel_summary_filename_matches_excel_writer(tmp_path: Path) -> None:
     with patch.object(build_notebooklm_bundle, "_DASHBOARD_DIR", tmp_path):
         summary = _build_excel_model_summary(ticker)
 
-    assert "not found" not in summary, (
-        f"Bundle could not find the Excel file at the canonical path; summary said:\n{summary}"
-    )
+    assert (
+        "not found" not in summary
+    ), f"Bundle could not find the Excel file at the canonical path; summary said:\n{summary}"
     assert expected_name in summary
 
 
@@ -212,9 +212,9 @@ def test_sample_commentary_renamed_and_banner_added(
 
     readme = (bundle_dir / "README_FOR_NOTEBOOKLM.md").read_text(encoding="utf-8")
     assert "07_exec_commentary.md" in readme
-    assert "live commentary required" in readme.lower(), (
-        "README should suppress the provenance demo prompt for sample commentary"
-    )
+    assert (
+        "live commentary required" in readme.lower()
+    ), "README should suppress the provenance demo prompt for sample commentary"
 
 
 # ── Live-vs-SAMPLE gating on ANTHROPIC_API_KEY ────────────────────────────────
@@ -335,9 +335,9 @@ def test_bundle_calls_live_generator_when_api_key_present(
     body = bundled.read_text(encoding="utf-8")
     # Live content (not the SAMPLE) is what landed in the bundle.
     assert "Live Commentary" in body
-    assert "SAMPLE — illustrative only" not in body, (
-        "Live commentary should not carry the SAMPLE banner"
-    )
+    assert (
+        "SAMPLE — illustrative only" not in body
+    ), "Live commentary should not carry the SAMPLE banner"
 
 
 def test_print_upload_instructions_includes_path_and_url(
@@ -364,9 +364,9 @@ def test_print_upload_instructions_includes_path_and_url(
     captured = capsys.readouterr().out
 
     # Absolute bundle path so the operator can copy-paste into Finder/explorer.
-    assert str(tmp_path.resolve()) in captured, (
-        "Upload instructions must include the absolute bundle path."
-    )
+    assert (
+        str(tmp_path.resolve()) in captured
+    ), "Upload instructions must include the absolute bundle path."
     # Manual upload destination — NotebookLM has no API.
     assert "https://notebooklm.google.com" in captured, (
         "Upload instructions must point at notebooklm.google.com so the "
@@ -399,9 +399,9 @@ def test_bundle_log_message_distinguishes_sample_from_live(
     with caplog.at_level(logging.INFO, logger=build_notebooklm_bundle.logger.name):
         build_notebooklm_bundle.build(ticker="TEST")
     fallback_messages = [r.getMessage() for r in caplog.records]
-    assert any(expected_fallback in msg for msg in fallback_messages), (
-        f"Expected fallback log line not emitted. Got:\n{fallback_messages}"
-    )
+    assert any(
+        expected_fallback in msg for msg in fallback_messages
+    ), f"Expected fallback log line not emitted. Got:\n{fallback_messages}"
     assert not any("Live commentary regenerated" in msg for msg in fallback_messages)
 
     # Branch B — key present, mocked generator.
@@ -422,9 +422,9 @@ def test_bundle_log_message_distinguishes_sample_from_live(
     with caplog.at_level(logging.INFO, logger=build_notebooklm_bundle.logger.name):
         build_notebooklm_bundle.build(ticker="TEST")
     live_messages = [r.getMessage() for r in caplog.records]
-    assert any("Live commentary regenerated" in msg for msg in live_messages), (
-        f"Expected live-regen log line not emitted. Got:\n{live_messages}"
-    )
+    assert any(
+        "Live commentary regenerated" in msg for msg in live_messages
+    ), f"Expected live-regen log line not emitted. Got:\n{live_messages}"
     assert not any(expected_fallback in msg for msg in live_messages)
 
 
@@ -538,10 +538,272 @@ def test_forecast_summary_renders_table_without_tabulate(tmp_path: Path) -> None
     with patch.object(build_notebooklm_bundle, "_MODELS_DIR", tmp_path):
         md = _build_forecast_summary("TEST")
 
-    assert "Missing optional dependency" not in md, (
-        f"Forecast summary leaked the tabulate-missing stub:\n{md}"
-    )
+    assert (
+        "Missing optional dependency" not in md
+    ), f"Forecast summary leaked the tabulate-missing stub:\n{md}"
     # The header row of the rendered table must be present.
-    assert "| model | period_end | yhat | yhat_lower_80 | yhat_upper_80 |" in md, (
-        f"Expected markdown table header not found in output:\n{md}"
+    assert (
+        "| model | period_end | yhat | yhat_lower_80 | yhat_upper_80 |" in md
+    ), f"Expected markdown table header not found in output:\n{md}"
+
+
+# ── Verification & hygiene prompts (gap #4) ───────────────────────────────────
+
+
+def test_readme_contains_verification_and_hygiene_prompts() -> None:
+    """README ships the audit-grade verification prompts the bundle is built for.
+
+    The bundle's whole reason to exist is provenance — every fact row carries
+    accession_no + filing_url. The README's prompt guide should turn that into
+    questions a reviewer can run: provenance audit, contradiction-finding,
+    unsupported-claim flagging, and negative-space ('what's missing').
+    """
+    readme = build_notebooklm_bundle._build_notebooklm_readme("TEST", is_sample=False)
+
+    assert "## Verification & hygiene" in readme, (
+        "README must contain a top-level Verification & hygiene section "
+        "alongside Financial analysis and Methodology."
     )
+    # Provenance audit prompt — every cited number with source/period/source-type.
+    assert "every cited number" in readme.lower()
+    assert "source type" in readme.lower()
+    # Contradiction-finding prompt — transcript vs 10-Q.
+    assert "contradictions" in readme.lower()
+    assert "8-K" in readme or "earnings release" in readme.lower(), (
+        "Contradiction prompt should mention the 8-K/earnings release as one "
+        "of the sources to compare against the 10-Q/10-K."
+    )
+    # Unsupported-claims prompt — flag claims with no source.
+    assert "unsupported" in readme.lower()
+    # Negative-space / what-would-confirm-or-refute prompt.
+    assert "confirm or refute" in readme.lower() or "missing" in readme.lower()
+    # Time-anchor prompt — bundles are snapshots; questions about latest must
+    # be grounded against the data-as-of marker.
+    assert "as of" in readme.lower() or "data through" in readme.lower()
+
+
+def test_readme_calls_out_enterprise_api_path() -> None:
+    """The 'no public API' line must mention the Enterprise API future path.
+
+    Consumer NotebookLM has no public API; NotebookLM Enterprise on Google
+    Cloud does. The bundle README should not assert the bare 'no public API'
+    claim without the Enterprise caveat.
+    """
+    readme = build_notebooklm_bundle._build_notebooklm_readme("TEST", is_sample=False)
+
+    assert (
+        "Enterprise" in readme
+    ), "README must reference NotebookLM Enterprise as the future automated path."
+
+
+# ── Earnings 8-K download (gap #1 slice) ──────────────────────────────────────
+
+
+def _fake_subs_with_8ks(
+    items_per_8k: list[str],
+    primary_doc: str = "ex991-earningspress.pdf",
+) -> dict[str, Any]:
+    """Build a fake EDGAR submissions JSON containing a list of 8-Ks.
+
+    Each 8-K's ``items`` cell carries the comma-separated Item codes the
+    filer reported (e.g. ``"2.02,9.01"`` for an earnings release with
+    exhibits). The function under test must filter to 8-Ks whose ``items``
+    contains ``2.02`` and pick the most recent.
+    """
+    return {
+        "filings": {
+            "recent": {
+                "form": ["8-K"] * len(items_per_8k),
+                "accessionNumber": [f"0001234567-25-{i:06d}" for i in range(len(items_per_8k))],
+                "primaryDocument": [primary_doc] * len(items_per_8k),
+                "items": items_per_8k,
+            }
+        }
+    }
+
+
+def test_download_earnings_8k_picks_most_recent_with_item_2_02(tmp_path: Path) -> None:
+    """The picker must prefer the most recent 8-K with Item 2.02 in items.
+
+    EDGAR's submissions API returns filings in reverse-chronological order,
+    so index 0 is the most recent. We construct three 8-Ks: index 0 is a
+    non-earnings 8-K (Item 8.01 — Other Events), index 1 is an earnings 8-K
+    (Item 2.02), index 2 is a stale earnings 8-K. The picker must select
+    index 1 (newest 2.02) by URL.
+    """
+    from src.build_notebooklm_bundle import _download_earnings_8k
+
+    fake_subs = _fake_subs_with_8ks(
+        items_per_8k=[
+            "8.01",  # most recent: non-earnings — must NOT be picked
+            "2.02,9.01",  # earnings release with exhibits — should win
+            "2.02",  # older earnings release
+        ]
+    )
+    captured_urls: list[str] = []
+
+    class _FakeResp:
+        status_code = 200
+        content = b"%PDF-1.4 fake earnings release"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return fake_subs
+
+    def _fake_get(url: str, **_kwargs: Any) -> _FakeResp:
+        captured_urls.append(url)
+        return _FakeResp()
+
+    dest = tmp_path / "03b_latest_earnings_8K.pdf"
+    with patch("src.build_notebooklm_bundle.requests.get", _fake_get):
+        ok = _download_earnings_8k(1327567, dest)
+
+    assert ok is True
+    assert dest.exists()
+    # Two GETs: the submissions API + the primary doc download.
+    doc_urls = [u for u in captured_urls if "/Archives/edgar/" in u]
+    assert len(doc_urls) == 1, f"Expected one Archives GET, got: {captured_urls}"
+    # The accession in the URL is the index-1 filing's accession with dashes
+    # stripped: 0001234567-25-000001 → 000123456725000001.
+    assert "000123456725000001" in doc_urls[0], (
+        f"Picker should have downloaded the index-1 (newest 2.02) filing, "
+        f"but URL was: {doc_urls[0]}"
+    )
+
+
+def test_download_earnings_8k_falls_back_to_txt_for_non_pdf(tmp_path: Path) -> None:
+    """Non-PDF earnings releases produce a .txt placeholder, not a broken PDF.
+
+    Mirrors the _download_sec_filing fallback contract: if the primary
+    document isn't a PDF, write a .txt placeholder pointing at the EDGAR
+    index page so NotebookLM still has *something* to ingest, and return
+    True (the bundle is still complete from the caller's perspective).
+    """
+    from src.build_notebooklm_bundle import _download_earnings_8k
+
+    fake_subs = _fake_subs_with_8ks(
+        items_per_8k=["2.02"],
+        primary_doc="ex991-earningspress.htm",
+    )
+
+    class _FakeResp:
+        status_code = 200
+        content = b""
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return fake_subs
+
+    def _fake_get(url: str, **_kwargs: Any) -> _FakeResp:
+        return _FakeResp()
+
+    dest = tmp_path / "03b_latest_earnings_8K.pdf"
+    with patch("src.build_notebooklm_bundle.requests.get", _fake_get):
+        ok = _download_earnings_8k(1327567, dest)
+
+    placeholder = dest.with_suffix(".txt")
+    assert ok is True
+    assert placeholder.exists()
+    assert not dest.exists(), (
+        "Non-PDF filings must NOT leave an empty .pdf next to the placeholder; "
+        "NotebookLM would ingest both."
+    )
+
+
+def test_build_includes_earnings_8k_in_returned_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``build()`` must publish the 03b earnings-8K entry in its result dict.
+
+    This locks the wiring contract: the new download function is actually
+    called from ``build`` and the result is registered under the
+    ``03b_latest_earnings_8K`` label. Without this, the function could be
+    written but never invoked, and tests would still pass module-level.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    dashboard_dir = tmp_path / "dashboard"
+    dashboard_dir.mkdir()
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "ticker: TEST\ncik: '0000000000'\ncik_int: 0\nname: Test Co\n"
+        "fiscal_year_end_month: 12\nfiscal_year_end_day: 31\n",
+        encoding="utf-8",
+    )
+
+    def _no_op(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    def _no_op_path(b_dir: Path) -> Path:
+        out = b_dir / "_stub.html"
+        out.write_text("stub", encoding="utf-8")
+        return out
+
+    earnings_8k_calls: list[tuple[int, Path]] = []
+
+    def _record_earnings_8k(cik_int: int, dest: Path) -> bool:
+        earnings_8k_calls.append((cik_int, dest))
+        # Simulate a successful PDF download by writing the file.
+        dest.write_bytes(b"%PDF-1.4 fake earnings 8-K")
+        return True
+
+    with (
+        patch.object(build_notebooklm_bundle, "_DASHBOARD_DIR", dashboard_dir),
+        patch.object(build_notebooklm_bundle, "_BUNDLE_DIR", bundle_dir),
+        patch.object(build_notebooklm_bundle, "_CONFIG_PATH", config_path),
+        patch.object(build_notebooklm_bundle, "_PROCESSED_DIR", tmp_path),
+        patch.object(build_notebooklm_bundle, "_MODELS_DIR", tmp_path),
+        patch.object(build_notebooklm_bundle, "_download_sec_filing", _no_op),
+        patch.object(build_notebooklm_bundle, "_download_earnings_8k", _record_earnings_8k),
+        patch.object(build_notebooklm_bundle, "_generate_test_report", _no_op_path),
+        patch.object(build_notebooklm_bundle, "_generate_eval_report", _no_op_path),
+    ):
+        written = build_notebooklm_bundle.build(ticker="TEST")
+
+    assert "03b_latest_earnings_8K" in written, (
+        f"build() did not register the earnings 8-K file; written keys: "
+        f"{sorted(written.keys())}"
+    )
+    earnings_path = written["03b_latest_earnings_8K"]
+    assert earnings_path.exists()
+    assert earnings_path.name == "03b_latest_earnings_8K.pdf"
+    # Confirm _download_earnings_8k was actually called from build().
+    assert len(earnings_8k_calls) == 1
+    assert earnings_8k_calls[0][1].name == "03b_latest_earnings_8K.pdf"
+
+
+def test_download_earnings_8k_returns_false_when_no_2_02_present(tmp_path: Path) -> None:
+    """If no recent 8-K carries Item 2.02, the picker reports failure cleanly.
+
+    The bundle build must not crash — it should log a warning and continue,
+    same contract as ``_download_sec_filing`` when no matching form is found.
+    """
+    from src.build_notebooklm_bundle import _download_earnings_8k
+
+    fake_subs = _fake_subs_with_8ks(items_per_8k=["8.01", "5.02", "1.01"])
+
+    class _FakeResp:
+        status_code = 200
+        content = b""
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return fake_subs
+
+    def _fake_get(url: str, **_kwargs: Any) -> _FakeResp:
+        return _FakeResp()
+
+    dest = tmp_path / "03b_latest_earnings_8K.pdf"
+    with patch("src.build_notebooklm_bundle.requests.get", _fake_get):
+        ok = _download_earnings_8k(1327567, dest)
+
+    assert ok is False
+    assert not dest.exists()
+    assert not dest.with_suffix(".txt").exists()

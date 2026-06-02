@@ -1,20 +1,23 @@
 """Assemble a NotebookLM source bundle from pipeline outputs.
 
-Creates ``dashboard/notebooklm_bundle/`` with 10 files that give
+Creates ``dashboard/notebooklm_bundle/`` with 11 files that give
 NotebookLM enough context to answer provenance questions like:
 *"For the $1.2B revenue figure in the commentary, what is the source filing?"*
 
 Files generated:
-    01_company_overview.md       — auto-generated from SEC facts + config
-    02_latest_10K.pdf            — most recent 10-K from SEC EDGAR
-    03_latest_10Q.pdf            — most recent 10-Q from SEC EDGAR
-    04_historical_financials.csv — last 12 quarters from DuckDB (with provenance)
-    05_forecast_summary.md       — Prophet + AutoARIMA + Lasso forecasts
-    06_excel_model_summary.md    — Base/Bull/Bear revenue/margin/FCF
-    07_exec_commentary.md        — copy of most-recent exec commentary
-    08_test_report.html          — pytest --cov=src --cov-report=html output
-    09_eval_report.md            — make eval output (pass/fail per scenario)
-    README_FOR_NOTEBOOKLM.md     — suggested prompts for NotebookLM
+    01_company_overview.md         — auto-generated from SEC facts + config
+    02_latest_10K.pdf              — most recent 10-K from SEC EDGAR
+    03_latest_10Q.pdf              — most recent 10-Q from SEC EDGAR
+    03b_latest_earnings_8K.pdf     — most recent 8-K Item 2.02 (earnings
+                                     release; management's prepared remarks
+                                     — Q&A is paywalled and not bundled)
+    04_historical_financials.csv   — last 12 quarters from DuckDB (with provenance)
+    05_forecast_summary.md         — Prophet + AutoARIMA + Lasso forecasts
+    06_excel_model_summary.md      — Base/Bull/Bear revenue/margin/FCF
+    07_exec_commentary.md          — copy of most-recent exec commentary
+    08_test_report.html            — pytest --cov=src --cov-report=html output
+    09_eval_report.md              — make eval output (pass/fail per scenario)
+    README_FOR_NOTEBOOKLM.md       — suggested prompts for NotebookLM
 
 CLI::
 
@@ -608,6 +611,106 @@ def _download_sec_filing(cik_int: int, form_type: str, dest: Path) -> bool:
         return False
 
 
+def _download_earnings_8k(cik_int: int, dest: Path) -> bool:
+    """Download the most recent 8-K Item 2.02 (earnings release) from EDGAR.
+
+    SEC Form 8-K Item 2.02 is "Results of Operations and Financial Condition"
+    — the earnings release that ships with each quarterly results announcement.
+    It contains management's prepared remarks; it does NOT include the
+    earnings call Q&A (those transcripts are paywalled and not on EDGAR).
+
+    Mirrors :func:`_download_sec_filing` exactly:
+      - same User-Agent + EDGAR submissions API call
+      - same .pdf-or-.txt fallback when the primary doc is not a PDF
+      - same stale-sibling cleanup on success
+
+    The picker filters on ``form == "8-K"`` AND ``items`` contains ``"2.02"``,
+    then takes the most recent (lowest index in the recent-filings arrays —
+    EDGAR returns them in reverse-chronological order).
+
+    Args:
+        cik_int: Integer CIK (e.g. 1327567 for PANW).
+        dest:    Target path for the downloaded file (typically
+            ``03b_latest_earnings_8K.pdf``).
+
+    Returns:
+        True if a file (PDF or .txt placeholder) was saved successfully,
+        False if no matching 8-K was found or the download failed.
+    """
+    headers = {"User-Agent": "ai-financial-analyst/1.0 (portfolio project)"}
+    cik_padded = str(cik_int).zfill(10)
+
+    submissions_url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+    try:
+        resp = requests.get(submissions_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        subs = resp.json()
+    except Exception as exc:
+        logger.warning("Could not fetch EDGAR submissions for 8-K Item 2.02: %s", exc)
+        return False
+
+    recent = subs.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    accns = recent.get("accessionNumber", [])
+    docs_list = recent.get("primaryDocument", [])
+    items_list = recent.get("items", [])
+
+    # EDGAR returns recent filings in reverse-chronological order, so the
+    # first index that matches is the newest. Item 2.02 may appear alone
+    # ("2.02") or alongside exhibits ("2.02,9.01") — split-and-membership
+    # check rather than substring to avoid false positives like "12.02".
+    idx = next(
+        (
+            i
+            for i, form in enumerate(forms)
+            if form == "8-K"
+            and i < len(items_list)
+            and "2.02" in {part.strip() for part in str(items_list[i]).split(",")}
+        ),
+        None,
+    )
+    if idx is None:
+        logger.warning(
+            "No 8-K with Item 2.02 (earnings release) found in recent filings for CIK %s",
+            cik_padded,
+        )
+        return False
+
+    accn = accns[idx].replace("-", "")
+    primary_doc = docs_list[idx] if idx < len(docs_list) else ""
+    base_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accn}/{primary_doc}"
+
+    if not primary_doc.lower().endswith(".pdf"):
+        sibling_pdf = dest
+        dest = dest.with_suffix(".txt")
+        dest.write_text(
+            f"Earnings 8-K (Item 2.02) not in PDF format.\n"
+            f"View at: https://www.sec.gov/cgi-bin/browse-edgar"
+            f"?action=getcompany&CIK={cik_padded}&type=8-K&dateb=&owner=include&count=10\n"
+            f"Primary document: {base_url}\n",
+            encoding="utf-8",
+        )
+        logger.info("Non-PDF earnings 8-K — placeholder written to %s", dest)
+        if sibling_pdf.exists() and sibling_pdf.suffix == ".pdf":
+            sibling_pdf.unlink()
+            logger.info("Removed stale PDF: %s", sibling_pdf.name)
+        return True
+
+    try:
+        resp = requests.get(base_url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        dest.write_bytes(resp.content)
+        logger.info("Downloaded earnings 8-K → %s (%d bytes)", dest.name, len(resp.content))
+        sibling_txt = dest.with_suffix(".txt")
+        if sibling_txt.exists():
+            sibling_txt.unlink()
+            logger.info("Removed stale placeholder: %s", sibling_txt.name)
+        return True
+    except Exception as exc:
+        logger.warning("Could not download earnings 8-K PDF: %s", exc)
+        return False
+
+
 # ── README for NotebookLM ─────────────────────────────────────────────────────
 
 
@@ -657,6 +760,30 @@ def _build_notebooklm_readme(ticker: str, is_sample: bool = False) -> str:
 ## Suggested Prompts
 
 {provenance_section}
+### Verification & hygiene
+These prompts make the bundle audit-able. Every fact row in
+`04_historical_financials.csv` carries `accession_no` + `filing_url`, so
+NotebookLM can answer "where did this number come from?" — but only if you
+ask it to.
+
+- *List every cited number in `07_exec_commentary.md` with: the figure, the
+  period it refers to, the source type (10-K / 10-Q / 8-K / forecast / model),
+  and the source filename. Mark any number whose source you cannot identify.*
+- *Compare `03b_latest_earnings_8K.pdf` (or `.txt`) against the latest 10-Q
+  in this bundle. List every contradiction or material inconsistency between
+  what management said in the earnings release and what the SEC filing
+  reports — note these are contradictions, not just differences in framing.*
+- *Flag every claim in `07_exec_commentary.md` that is not supported by a
+  citation to a specific row in `04_historical_financials.csv`, the 10-K,
+  the 10-Q, the 8-K, or the forecast outputs. Quote the unsupported claim
+  verbatim.*
+- *What would you need to see to confirm or refute the thesis in
+  `07_exec_commentary.md`? List the specific evidence types that are NOT in
+  this bundle (e.g. earnings call Q&A, sell-side estimates, peer comps).*
+- *What is the data-as-of date for this bundle? Reference the latest
+  `period_end` in `04_historical_financials.csv` and the filing date of the
+  newest 10-Q/10-K. Treat that date as the cutoff for any "latest" question.*
+
 ### Financial analysis
 - *Summarize the company's revenue trajectory over the last 3 years.*
 - *What are the largest variances between Prophet, AutoARIMA, and Lasso forecasts?*
@@ -675,6 +802,7 @@ def _build_notebooklm_readme(ticker: str, is_sample: bool = False) -> str:
 | 01_company_overview.md | Company facts + data sources |
 | 02_latest_10K.pdf / .txt | Most recent annual report |
 | 03_latest_10Q.pdf / .txt | Most recent quarterly report |
+| 03b_latest_earnings_8K.pdf / .txt | Most recent 8-K Item 2.02 (earnings release — management's prepared remarks; does NOT include Q&A) |
 | 04_historical_financials.csv | Last 12 quarters with accession_no + filing_url |
 | 05_forecast_summary.md | Prophet + AutoARIMA + Lasso outputs with CIs |
 | 06_excel_model_summary.md | Base/Bull/Bear scenario description |
@@ -686,6 +814,12 @@ def _build_notebooklm_readme(ticker: str, is_sample: bool = False) -> str:
 This pipeline follows the reasoning-vs-computation pattern:
 all arithmetic happens in Python/SQL, Claude generates narrative only. Every
 number in the commentary traces to an SEC accession number.
+
+## Automation note
+Consumer NotebookLM (notebooklm.google.com) has no public API as of 2026,
+so this bundle is uploaded manually. NotebookLM Enterprise on Google Cloud
+exposes an API and a compliance path; migrating the upload step to that API
+is a future-state option but is not wired into this repo.
 """
 
 
@@ -755,6 +889,29 @@ def build(ticker: str | None = None) -> dict[str, Path]:
             path_10q = path_10q.with_suffix(".txt")
     written["03_latest_10Q"] = path_10q
     logger.info("Written: %s", path_10q.name)
+
+    # 03b — Latest earnings 8-K (Item 2.02). Adds management's prepared
+    # remarks to the bundle so verification prompts can compare what
+    # management said against the 10-Q/10-K. Q&A is not in scope (paywalled).
+    # Bundle is still considered complete if no recent 8-K Item 2.02 is found —
+    # we just write a placeholder so NotebookLM's source list is stable across
+    # runs, which avoids "missing file" surprises in the upload step.
+    path_8k = _BUNDLE_DIR / "03b_latest_earnings_8K.pdf"
+    if not _download_earnings_8k(cik_int, path_8k):
+        if not path_8k.exists():
+            path_8k = path_8k.with_suffix(".txt")
+            path_8k.write_text(
+                f"No recent 8-K Item 2.02 (earnings release) found for CIK "
+                f"{cik_int:010d}.\nView all 8-Ks at: "
+                "https://www.sec.gov/cgi-bin/browse-edgar"
+                f"?action=getcompany&CIK={cik_int:010d}&type=8-K",
+                encoding="utf-8",
+            )
+    elif not path_8k.exists():
+        # _download_earnings_8k chose the .txt fallback path.
+        path_8k = path_8k.with_suffix(".txt")
+    written["03b_latest_earnings_8K"] = path_8k
+    logger.info("Written: %s", path_8k.name)
 
     # 04 — Historical financials
     fy_end_month = int(config.get("fiscal_year_end_month", 12))
@@ -849,10 +1006,12 @@ _NOTEBOOKLM_UPLOAD_URL = "https://notebooklm.google.com"
 def _print_upload_instructions(bundle_dir: Path, files: dict[str, Path]) -> None:
     """Print the bundle path + manual NotebookLM upload URL after build.
 
-    NotebookLM has no public API as of 2026 — the upload step is a manual
-    drag-drop in the browser. Surfacing the absolute bundle path and the
-    upload URL here keeps runtime output aligned with the README/HOW_TO_DEMO
-    framing and saves the operator a docs lookup.
+    Consumer NotebookLM has no public API as of 2026 — the upload step is a
+    manual drag-drop in the browser. NotebookLM Enterprise on Google Cloud
+    exposes an API; that's a future-state option, not wired into this repo.
+    Surfacing the absolute bundle path and the upload URL here keeps runtime
+    output aligned with the README/HOW_TO_DEMO framing and saves the operator
+    a docs lookup.
     """
     print(f"\nBundle written to: {bundle_dir.resolve()}")
     print(f"Files: {len(files)}")
@@ -860,9 +1019,10 @@ def _print_upload_instructions(bundle_dir: Path, files: dict[str, Path]) -> None
         size = p.stat().st_size if p.exists() else 0
         print(f"  {p.name:<40}  {size:>8,} bytes")
     print(
-        "\nNext step (manual): NotebookLM has no public API. "
+        "\nNext step (manual): consumer NotebookLM has no public API. "
         f"Upload the bundle's files to {_NOTEBOOKLM_UPLOAD_URL} to create "
-        "the notebook."
+        "the notebook. (NotebookLM Enterprise on Google Cloud exposes an "
+        "API for automated uploads — future option.)"
     )
 
 
