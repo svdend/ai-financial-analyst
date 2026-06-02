@@ -44,5 +44,8 @@ deepdiff==8.1.1
 # ── Code quality ──────────────────────────────────────────────────────────────
 ruff==0.8.4
 mypy==1.13.0
+pandas-stubs==3.0.3.260530
+types-PyYAML==6.0.12.20260518
+types-requests==2.33.0.20260518
 detect-secrets==1.5.0
 pre-commit==4.0.1
