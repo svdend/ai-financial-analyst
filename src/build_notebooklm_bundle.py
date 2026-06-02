@@ -25,6 +25,7 @@ CLI::
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -364,6 +365,57 @@ def _is_sample_commentary(path: Path) -> bool:
     return "_SAMPLE" in path.name
 
 
+_SAMPLE_FALLBACK_LOG_MSG = (
+    "ANTHROPIC_API_KEY not set — bundling SAMPLE commentary. "
+    "To regenerate live, set the key and re-run `make demo` "
+    "(or `make commentary LIVE=1`)."
+)
+
+
+def _maybe_regenerate_live_commentary(ticker: str) -> Path | None:
+    """If ``ANTHROPIC_API_KEY`` is set, regenerate a live commentary; else fall back to SAMPLE.
+
+    The bundle is the canonical NotebookLM hand-off. When the key is present
+    we re-run the full ``generate_commentary`` pipeline so 07_exec_commentary.md
+    is tied to real EDGAR data for the current period. When the key is absent
+    (e.g. on a Claude-subscription-only machine) we skip live regen and let
+    ``_find_latest_commentary`` return the committed SAMPLE file.
+
+    Either branch keeps ``make demo`` exiting 0 — the fallback is intentional.
+
+    Args:
+        ticker: Ticker symbol whose commentary we want refreshed.
+
+    Returns:
+        Path to the freshly-generated live commentary, or ``None`` if we fell
+        back to the SAMPLE / live regen failed gracefully.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        logger.info(_SAMPLE_FALLBACK_LOG_MSG)
+        return None
+
+    # Lazy import: we only want the anthropic SDK loaded on the live branch so
+    # the fallback path stays usable on machines that don't ship the SDK.
+    from src import generate_commentary as _gc  # noqa: PLC0415
+
+    try:
+        out_path = _gc.generate(ticker=ticker, dry_run=False)
+    except Exception as exc:  # noqa: BLE001 — broad catch is the entire point: never fail the bundle
+        logger.warning(
+            "Live commentary regeneration failed (%s: %s); falling back to SAMPLE.",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    if out_path is None:  # pragma: no cover — generate() returns None only in dry-run
+        logger.warning("generate() returned None in live mode; falling back to SAMPLE.")
+        return None
+
+    logger.info("Live commentary regenerated: %s", out_path)
+    return out_path
+
+
 _SAMPLE_BANNER = (
     "> ⚠️ **SAMPLE — illustrative only.** This file shows the citation format\n"
     "> and narrative structure for executive commentary. Accession numbers in\n"
@@ -571,16 +623,20 @@ def _build_notebooklm_readme(ticker: str, is_sample: bool = False) -> str:
     Returns:
         Markdown string for README_FOR_NOTEBOOKLM.md.
     """
-    commentary_filename = "07_exec_commentary_SAMPLE.md" if is_sample else "07_exec_commentary.md"
+    # Bundle filename is always 07_exec_commentary.md; the SAMPLE marker is
+    # carried by an in-file banner, not the filename. README narrates which
+    # variant is bundled so reviewers know whether to trust the accessions.
+    commentary_filename = "07_exec_commentary.md"
     commentary_suffix = " (illustrative sample)" if is_sample else ""
     if is_sample:
         provenance_section = (
             "### Provenance queries (live commentary required)\n"
-            f"_The bundled commentary file is `{commentary_filename}` —\n"
-            "an illustrative sample. Its accession numbers are NOT guaranteed to\n"
-            "appear in `04_historical_financials.csv`. To run the provenance demo,\n"
-            f"first generate a live commentary: `make commentary TICKER={ticker} LIVE=1`,\n"
-            "then re-run `make notebooklm` and re-upload the bundle._\n"
+            f"_The bundled commentary file (`{commentary_filename}`) is currently\n"
+            "an illustrative SAMPLE — the in-file banner flags it explicitly. Its\n"
+            "accession numbers are NOT guaranteed to appear in\n"
+            "`04_historical_financials.csv`. To run the provenance demo, set\n"
+            "`ANTHROPIC_API_KEY` and re-run `make demo` (or `make commentary "
+            f"TICKER={ticker} LIVE=1` followed by `make notebooklm`)._\n"
         )
     else:
         provenance_section = (
@@ -727,18 +783,24 @@ def build(ticker: str | None = None) -> dict[str, Path]:
     written["06_excel_model_summary"] = path
     logger.info("Written: %s", path.name)
 
-    # 07 — Exec commentary (most recent)
-    commentary_path = _find_latest_commentary(resolved_ticker)
+    # 07 — Exec commentary (most recent).
+    # Try a live regen first; if ANTHROPIC_API_KEY is missing this is a no-op
+    # and we fall through to whatever's already on disk (typically the SAMPLE).
+    live_regen_path = _maybe_regenerate_live_commentary(resolved_ticker)
+    # Prefer the freshly-regenerated live file when present — picking it
+    # explicitly avoids an alpha-sort race where ``_SAMPLE`` outranks today's
+    # ``YYYYMMDD`` stamp under reverse-lexicographic ordering.
+    commentary_path = live_regen_path or _find_latest_commentary(resolved_ticker)
     is_sample = bool(commentary_path and _is_sample_commentary(commentary_path))
-    # Bundle filename embeds the SAMPLE marker so NotebookLM (and any reader
-    # listing the folder) can immediately tell illustrative content from a
-    # live, provenance-checked commentary.
-    dest_name = "07_exec_commentary_SAMPLE.md" if is_sample else "07_exec_commentary.md"
-    dest = _BUNDLE_DIR / dest_name
-    # Remove any prior version under the other name so stale files don't linger.
-    other = _BUNDLE_DIR / ("07_exec_commentary.md" if is_sample else "07_exec_commentary_SAMPLE.md")
-    if other.exists():
-        other.unlink()
+    # Bundle filename is always 07_exec_commentary.md regardless of source —
+    # one canonical name avoids NotebookLM having to pick between two siblings.
+    # The SAMPLE marker carries through as an in-file banner so reviewers can
+    # still tell illustrative content from a live, provenance-checked run.
+    dest = _BUNDLE_DIR / "07_exec_commentary.md"
+    # Remove the legacy _SAMPLE-suffixed file if it lingers from an older run.
+    legacy = _BUNDLE_DIR / "07_exec_commentary_SAMPLE.md"
+    if legacy.exists():
+        legacy.unlink()
     if commentary_path and commentary_path.exists():
         body = commentary_path.read_text(encoding="utf-8")
         if is_sample:

@@ -7,15 +7,19 @@ Covers reviewer-facing invariants:
     is left on disk for NotebookLM to ingest.
   - Forecast summary renders a real markdown table with no "Missing
     optional dependency 'tabulate'" stub leaking through.
+  - The commentary path is gated on ``ANTHROPIC_API_KEY``: present →
+    regenerate live; absent → fall back to the committed SAMPLE bundle.
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 from src import build_excel_model, build_notebooklm_bundle
 from src.build_notebooklm_bundle import (
@@ -143,13 +147,20 @@ def test_download_sec_filing_removes_stale_pdf_when_filing_is_htm(tmp_path: Path
     )
 
 
-def test_sample_commentary_renamed_and_banner_added(tmp_path: Path) -> None:
-    """When the source commentary is *_SAMPLE*, bundle file embeds SAMPLE in name + banner.
+def test_sample_commentary_renamed_and_banner_added(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sample commentary is bundled as 07_exec_commentary.md with an in-file banner.
 
-    Reviewer asked: don't ship a 07_exec_commentary.md whose accessions don't
-    appear in 04_historical_financials.csv. Fix is to make sample-vs-live
-    visible from filename and from a banner inside the file.
+    The bundle output filename is always ``07_exec_commentary.md`` whether the
+    source is sample or live; the SAMPLE marker carries through as an in-file
+    banner only. This avoids two files for NotebookLM to pick between, which
+    confused reviewers in the original SAMPLE-suffix scheme.
+
+    With ``ANTHROPIC_API_KEY`` unset, the live-regen branch is skipped and the
+    most-recent SAMPLE file from ``dashboard/`` is used as-is.
     """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     dashboard_dir = tmp_path / "dashboard"
     dashboard_dir.mkdir()
     sample_src = dashboard_dir / "TEST_exec_commentary_SAMPLE.md"
@@ -165,9 +176,10 @@ def test_sample_commentary_renamed_and_banner_added(tmp_path: Path) -> None:
         "fiscal_year_end_month: 12\nfiscal_year_end_day: 31\n",
         encoding="utf-8",
     )
-    # Pre-create stale 07_exec_commentary.md to confirm cleanup.
-    stale = bundle_dir / "07_exec_commentary.md"
-    stale.write_text("# stale live commentary\n", encoding="utf-8")
+    # Pre-create stale 07_exec_commentary_SAMPLE.md to confirm cleanup of the
+    # legacy suffix path.
+    stale = bundle_dir / "07_exec_commentary_SAMPLE.md"
+    stale.write_text("# stale legacy-suffix commentary\n", encoding="utf-8")
 
     # Stub network + heavy build steps so we only exercise the commentary path.
     def _no_op(*_args: Any, **_kwargs: Any) -> bool:
@@ -190,19 +202,191 @@ def test_sample_commentary_renamed_and_banner_added(tmp_path: Path) -> None:
     ):
         written = build_notebooklm_bundle.build(ticker="TEST")
 
-    sample_dest = bundle_dir / "07_exec_commentary_SAMPLE.md"
     live_dest = bundle_dir / "07_exec_commentary.md"
-    assert sample_dest.exists(), "Sample commentary should be written under SAMPLE filename"
-    assert not live_dest.exists(), "Stale 07_exec_commentary.md was not cleaned up"
-    body = sample_dest.read_text(encoding="utf-8")
+    legacy_dest = bundle_dir / "07_exec_commentary_SAMPLE.md"
+    assert live_dest.exists(), "Bundle commentary should always be 07_exec_commentary.md"
+    assert not legacy_dest.exists(), "Stale 07_exec_commentary_SAMPLE.md was not cleaned up"
+    body = live_dest.read_text(encoding="utf-8")
     assert "SAMPLE — illustrative only" in body, "Banner not injected into sample commentary"
-    assert written["07_exec_commentary"] == sample_dest
+    assert written["07_exec_commentary"] == live_dest
 
     readme = (bundle_dir / "README_FOR_NOTEBOOKLM.md").read_text(encoding="utf-8")
-    assert "07_exec_commentary_SAMPLE.md" in readme
+    assert "07_exec_commentary.md" in readme
     assert (
         "live commentary required" in readme.lower()
     ), "README should suppress the provenance demo prompt for sample commentary"
+
+
+# ── Live-vs-SAMPLE gating on ANTHROPIC_API_KEY ────────────────────────────────
+
+
+def _stub_bundle_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, Path]:
+    """Set up a hermetic bundle environment and return (dashboard, bundle, config)."""
+    dashboard_dir = tmp_path / "dashboard"
+    dashboard_dir.mkdir()
+    sample_src = dashboard_dir / "TEST_exec_commentary_SAMPLE.md"
+    sample_src.write_text(
+        "# TEST Commentary (Sample)\nRevenue $1.0B [0000000000-00-000000]\n",
+        encoding="utf-8",
+    )
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "ticker: TEST\ncik: '0000000000'\ncik_int: 0\nname: Test Co\n"
+        "fiscal_year_end_month: 12\nfiscal_year_end_day: 31\n",
+        encoding="utf-8",
+    )
+
+    def _no_op(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    def _no_op_path(b_dir: Path) -> Path:
+        out = b_dir / "_stub.html"
+        out.write_text("stub", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr(build_notebooklm_bundle, "_DASHBOARD_DIR", dashboard_dir)
+    monkeypatch.setattr(build_notebooklm_bundle, "_BUNDLE_DIR", bundle_dir)
+    monkeypatch.setattr(build_notebooklm_bundle, "_CONFIG_PATH", config_path)
+    monkeypatch.setattr(build_notebooklm_bundle, "_PROCESSED_DIR", tmp_path)
+    monkeypatch.setattr(build_notebooklm_bundle, "_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(build_notebooklm_bundle, "_download_sec_filing", _no_op)
+    monkeypatch.setattr(build_notebooklm_bundle, "_generate_test_report", _no_op_path)
+    monkeypatch.setattr(build_notebooklm_bundle, "_generate_eval_report", _no_op_path)
+
+    return dashboard_dir, bundle_dir, config_path
+
+
+def test_bundle_uses_sample_when_no_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No ANTHROPIC_API_KEY → bundle ships the committed SAMPLE content as 07_exec_commentary.md.
+
+    The fallback is intentional: this machine has Claude subscription only, no
+    API key, and ``make demo`` must still produce a complete bundle. We assert
+    that the bundle's 07_exec_commentary.md content matches the SAMPLE source
+    (banner aside) and that no live-generator code path was invoked.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    dashboard_dir, bundle_dir, _ = _stub_bundle_env(tmp_path, monkeypatch)
+    sample_src = dashboard_dir / "TEST_exec_commentary_SAMPLE.md"
+    sample_text = sample_src.read_text(encoding="utf-8")
+
+    # Spy on generate_commentary.generate so we can confirm it was NOT called.
+    from src import generate_commentary as gc
+
+    spy = MagicMock()
+    monkeypatch.setattr(gc, "generate", spy)
+
+    with caplog.at_level(logging.INFO, logger=build_notebooklm_bundle.logger.name):
+        written = build_notebooklm_bundle.build(ticker="TEST")
+
+    bundled = bundle_dir / "07_exec_commentary.md"
+    assert bundled.exists()
+    assert written["07_exec_commentary"] == bundled
+    body = bundled.read_text(encoding="utf-8")
+    # SAMPLE source content must appear verbatim in the bundle (banner is prepended).
+    assert sample_text in body, "Sample source content was not preserved in the bundle"
+    spy.assert_not_called()
+
+
+def test_bundle_calls_live_generator_when_api_key_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ANTHROPIC_API_KEY present → live commentary generator is invoked, no real API call.
+
+    We mock ``generate_commentary.generate`` so no Anthropic API request is
+    made and a fake live commentary is materialised in ``dashboard/`` for the
+    bundler to pick up.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake")
+    dashboard_dir, bundle_dir, _ = _stub_bundle_env(tmp_path, monkeypatch)
+
+    # Mock the live generator: instead of calling the real Anthropic API, write
+    # a fake live-commentary file to the dashboard dir under the canonical
+    # naming pattern that ``_find_latest_commentary`` already understands.
+    from src import generate_commentary as gc
+
+    def _fake_generate(ticker: str | None = None, **_kwargs: Any) -> Path:
+        live_path = dashboard_dir / f"{ticker}_exec_commentary_20260601.md"
+        live_path.write_text(
+            f"# {ticker} Live Commentary\nRevenue $9.9B [9999999999-99-999999]\n",
+            encoding="utf-8",
+        )
+        return live_path
+
+    spy = MagicMock(side_effect=_fake_generate)
+    monkeypatch.setattr(gc, "generate", spy)
+
+    written = build_notebooklm_bundle.build(ticker="TEST")
+
+    spy.assert_called_once()
+    # Confirm dry_run is False — i.e. we actually requested a live regen.
+    _, kwargs = spy.call_args
+    assert kwargs.get("dry_run") is False, "Live regen must be invoked with dry_run=False"
+
+    bundled = bundle_dir / "07_exec_commentary.md"
+    assert bundled.exists()
+    assert written["07_exec_commentary"] == bundled
+    body = bundled.read_text(encoding="utf-8")
+    # Live content (not the SAMPLE) is what landed in the bundle.
+    assert "Live Commentary" in body
+    assert (
+        "SAMPLE — illustrative only" not in body
+    ), "Live commentary should not carry the SAMPLE banner"
+
+
+def test_bundle_log_message_distinguishes_sample_from_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The bundle logs an honest, distinct message for each branch.
+
+    Pin the exact fallback line so a future refactor can't silently swap it
+    for something less informative.
+    """
+    expected_fallback = (
+        "ANTHROPIC_API_KEY not set — bundling SAMPLE commentary. "
+        "To regenerate live, set the key and re-run `make demo` "
+        "(or `make commentary LIVE=1`)."
+    )
+
+    # Branch A — no key.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _stub_bundle_env(tmp_path, monkeypatch)
+    with caplog.at_level(logging.INFO, logger=build_notebooklm_bundle.logger.name):
+        build_notebooklm_bundle.build(ticker="TEST")
+    fallback_messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        expected_fallback in msg for msg in fallback_messages
+    ), f"Expected fallback log line not emitted. Got:\n{fallback_messages}"
+    assert not any("Live commentary regenerated" in msg for msg in fallback_messages)
+
+    # Branch B — key present, mocked generator.
+    caplog.clear()
+    tmp2 = tmp_path / "round2"
+    tmp2.mkdir()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake")
+    dashboard_dir, _, _ = _stub_bundle_env(tmp2, monkeypatch)
+
+    from src import generate_commentary as gc
+
+    def _fake_generate(ticker: str | None = None, **_kwargs: Any) -> Path:
+        p = dashboard_dir / f"{ticker}_exec_commentary_20260601.md"
+        p.write_text(f"# {ticker} Live\nRevenue $1.0B [0000000000-00-000000]\n", encoding="utf-8")
+        return p
+
+    monkeypatch.setattr(gc, "generate", MagicMock(side_effect=_fake_generate))
+    with caplog.at_level(logging.INFO, logger=build_notebooklm_bundle.logger.name):
+        build_notebooklm_bundle.build(ticker="TEST")
+    live_messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        "Live commentary regenerated" in msg for msg in live_messages
+    ), f"Expected live-regen log line not emitted. Got:\n{live_messages}"
+    assert not any(expected_fallback in msg for msg in live_messages)
 
 
 def test_historical_financials_uses_canonical_export(tmp_path: Path) -> None:
