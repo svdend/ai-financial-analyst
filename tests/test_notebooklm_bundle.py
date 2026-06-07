@@ -514,6 +514,28 @@ def test_historical_financials_uses_canonical_export(tmp_path: Path) -> None:
             f"({q2.iloc[0]['fiscal_year']}, {q2.iloc[0]['fiscal_period']})"
         )
 
+    # Invariant 5: derived Q4 rows must be flagged so the provenance audit does
+    # not treat a computed quarterly value as a verbatim line item in the 10-K.
+    assert "revenue_provenance" in df.columns, (
+        "Bundle CSV must carry a revenue_provenance flag distinguishing reported "
+        "from derived (FY − Q1 − Q2 − Q3) quarterly values."
+    )
+    q4_fy24 = df[df["period_end"] == "2024-07-31"]
+    if len(q4_fy24) > 0:
+        row = q4_fy24.iloc[0]
+        assert row["revenue_provenance"] == "derived", (
+            "FY24 Q4 (2024-07-31) Revenue is derived by subtraction; it must be "
+            f"flagged 'derived', got {row['revenue_provenance']!r}"
+        )
+        assert (
+            abs(float(row["Revenue"]) - 2_196_000_000.0) < 1.0
+        ), f"FY24 Q4 derived Revenue should be $2,196M; got ${float(row['Revenue']):,.0f}"
+    # A normal reported quarter must be flagged 'reported'.
+    if len(q2) > 0:
+        assert (
+            q2.iloc[0]["revenue_provenance"] == "reported"
+        ), "A reported 10-Q quarter must be flagged 'reported', not 'derived'."
+
 
 def test_forecast_summary_renders_table_without_tabulate(tmp_path: Path) -> None:
     """05_forecast_summary.md must render a real table, not the tabulate stub.

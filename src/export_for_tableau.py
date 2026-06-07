@@ -89,6 +89,33 @@ _BALANCE_SHEET_LINE_ITEMS: frozenset[str] = frozenset(
 _QUARTER_FRAME_RE = r"^CY\d{4}Q[1-4]$"
 _FCF_DERIVED_CONCEPT = "OperatingCashFlow - CapEx (derived)"
 
+# Income-statement flow items whose standalone Q4 is derived as
+# FY_total − Q1 − Q2 − Q3.  Restricted to ADDITIVE duration concepts: the
+# annual total equals the sum of the four standalone quarters.  Membership is
+# an explicit allowlist, never "duration items minus balance-sheet items",
+# because DilutedShares is a *duration* concept too but a weighted AVERAGE —
+# FY−Q1−Q2−Q3 is meaningless for it (it can even go negative).  Balance-sheet
+# stocks are excluded here: their FY-end IS the Q4 closing balance, handled by
+# the FY→Q4 promotion path (see _BALANCE_SHEET_LINE_ITEMS).  Cumulative
+# cash-flow flows are also excluded: their Q4 is FY_cumulative − Q3_cumulative
+# (a different mechanism, via _cash_flow_ytd_to_standalone), not the four-term
+# income formula.
+_Q4_DERIVABLE_INCOME_ITEMS: frozenset[str] = frozenset(
+    {
+        "Revenue",
+        "CostOfRevenue",
+        "GrossProfit",
+        "OperatingExpenses",
+        "OperatingIncome",
+        "NetIncome",
+        "ResearchAndDevelopment",
+    }
+)
+# Suffix appended to the FY 10-K's concept_used on a derived Q4 row, so the
+# provenance audit treats it as sourced-but-derived (it inherits the 10-K
+# accession but the quarter value is computed, not reported).
+_Q4_DERIVED_CONCEPT_SUFFIX = " (FY − Q1−Q2−Q3 derived)"
+
 # ── Metric metadata ────────────────────────────────────────────────────────────
 # Controls dim_metric.csv — human labels and category groupings for Tableau.
 _METRIC_META: list[dict[str, str]] = [
@@ -494,6 +521,182 @@ def _derive_free_cash_flow(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df, fcf], ignore_index=True)
 
 
+def _derive_q4_income_standalone(
+    con: duckdb.DuckDBPyConnection,
+    df: pd.DataFrame,
+    fy_end_month: int,
+) -> pd.DataFrame:
+    """Append derived Q4 standalone rows for additive income-statement flows.
+
+    SEC filers report Q1/Q2/Q3 as standalone quarters in their 10-Qs but
+    disclose only the **12-month FY total** in the 10-K — there is no standalone
+    Q4 income fact in XBRL.  For an *additive* duration (flow) concept the Q4
+    standalone is therefore ``FY_total − Q1 − Q2 − Q3``.  This function computes
+    it for the explicit :data:`_Q4_DERIVABLE_INCOME_ITEMS` allowlist only.
+
+    Why an allowlist and not "duration items minus balance-sheet items":
+    ``DilutedShares`` is a duration concept too, but a weighted *average* — its
+    FY value is not the sum of the quarters, so subtraction is meaningless.  It
+    is deliberately absent from the allowlist.
+
+    FY totals are fetched via a **separate** query against ``v_canonical_facts``
+    rather than by widening the caller's main ``WHERE`` clause.  Routing FY
+    income rows through the main ``(ticker, line_item, period_end)`` QUALIFY
+    would let the annual-framed FY row survive at the Q4 period_end and leak the
+    FY total into the export — the exact failure the ``WHERE`` clause comment
+    warns against.  The separate query never touches the main partition.
+
+    The Q1/Q2/Q3 operands are read from *df*, which at the call site has already
+    been deduped (frame-aware, sign-safe) and relabelled, so the operands are
+    the single standalone rows with correct fiscal labels.
+
+    This is a **fallback**: if EDGAR already emitted an explicit Q4 standalone
+    for a ``(line_item, fiscal_year)`` it is left untouched and no second row is
+    added.  A year missing the FY total or any of Q1/Q2/Q3, or whose quarters
+    use a different ``concept_used`` than the FY total (a mid-year concept
+    switch), is skipped with a warning — no row is fabricated from a partial or
+    mismatched sum.
+
+    Each derived row inherits the FY 10-K's ``accession_no`` / ``filing_url`` /
+    ``form_type`` / ``filed_date`` so the "every fact row traces to an SEC
+    filing" invariant holds, with :data:`_Q4_DERIVED_CONCEPT_SUFFIX` appended to
+    ``concept_used`` marking it derived.
+
+    Args:
+        con:          Open DuckDB connection exposing ``v_canonical_facts``.
+        df:           The in-progress export frame (post-dedup, post-relabel).
+        fy_end_month: Fiscal-year-end month (1–12), for fiscal-label recompute.
+
+    Returns:
+        *df* with derived Q4 income rows appended (or unchanged if none qualify).
+    """
+    if df.empty:
+        return df
+
+    inc = df[df["line_item"].isin(_Q4_DERIVABLE_INCOME_ITEMS) & df["period_type"].eq("Q")]
+    if inc.empty:
+        return df
+
+    # ── Canonical FY totals (separate query; one row per line_item/period_end) ──
+    allowlist_sql = ", ".join(f"'{li}'" for li in sorted(_Q4_DERIVABLE_INCOME_ITEMS))
+    fy = con.execute(f"""
+        SELECT
+            ticker, line_item, period_end, value, unit, concept_used,
+            accession_no, fact_id, filing_url, form_type, filed_date
+        FROM v_canonical_facts
+        WHERE period_type = 'FY' AND line_item IN ({allowlist_sql})
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY ticker, line_item, period_end
+            ORDER BY
+                CASE form_type
+                    WHEN '10-K/A' THEN 4
+                    WHEN '10-Q/A' THEN 3
+                    WHEN '10-K'   THEN 2
+                    WHEN '10-Q'   THEN 1
+                    ELSE 0
+                END DESC,
+                filed_date DESC
+        ) = 1
+    """).fetchdf()
+    if fy.empty:
+        return df
+
+    # Recompute fiscal_year from period_end (consistent with df's labels) rather
+    # than trusting the FY row's stamped fiscal_year.  Keyed throughout by the
+    # (ticker, line_item, fiscal_year) tuple.
+
+    # Years that already carry an explicit (filed) Q4 — defer to those.
+    have_q4: set[tuple[str, str, int]] = {
+        (str(r["ticker"]), str(r["line_item"]), int(r["fiscal_year"]))
+        for r in inc[inc["fiscal_period"].eq("Q4")].to_dict("records")
+    }
+
+    # Q1+Q2+Q3 per (ticker, line_item, fiscal_year): accumulate the sum, the set
+    # of quarters present (all three required), and the set of concepts used (a
+    # single concept required — guards against a mid-year concept switch).
+    q123_sum: dict[tuple[str, str, int], float] = {}
+    q123_quarters: dict[tuple[str, str, int], set[str]] = {}
+    q123_concepts: dict[tuple[str, str, int], set[str]] = {}
+    for r in inc[inc["fiscal_period"].isin(["Q1", "Q2", "Q3"])].to_dict("records"):
+        key: tuple[str, str, int] = (str(r["ticker"]), str(r["line_item"]), int(r["fiscal_year"]))
+        q123_sum[key] = q123_sum.get(key, 0.0) + float(r["value"])
+        q123_quarters.setdefault(key, set()).add(str(r["fiscal_period"]))
+        q123_concepts.setdefault(key, set()).add(str(r["concept_used"]))
+
+    rows: list[dict[str, Any]] = []
+    emitted: set[tuple[str, str, int]] = set()
+    for fyrow in fy.to_dict("records"):
+        line_item = str(fyrow["line_item"])
+        fiscal_year = _calendar_to_fiscal_quarter(pd.Timestamp(fyrow["period_end"]), fy_end_month)[
+            0
+        ]
+        key = (str(fyrow["ticker"]), line_item, fiscal_year)
+        if key in have_q4:
+            continue  # explicit filed Q4 wins; do not fabricate a second row
+        if key in emitted:
+            # The FY query dedups on period_end, but the derived row is keyed on
+            # fiscal_year — guard against the (vanishingly rare) case of two FY
+            # totals mapping to one fiscal year (e.g. two period_ends in the same
+            # fiscal-end month) producing duplicate Q4 rows.
+            logger.warning(
+                "  %s FY%s: multiple FY totals map to one fiscal year; "
+                "keeping the first derived Q4 only",
+                line_item,
+                fiscal_year,
+            )
+            continue
+        if q123_quarters.get(key, set()) != {"Q1", "Q2", "Q3"}:
+            missing = {"Q1", "Q2", "Q3"} - q123_quarters.get(key, set())
+            logger.warning(
+                "  %s FY%s: cannot derive Q4 — missing standalone quarter(s) %s",
+                line_item,
+                fiscal_year,
+                ", ".join(sorted(missing)) or "(none)",
+            )
+            continue
+        fy_concept = str(fyrow["concept_used"])
+        if q123_concepts.get(key, set()) != {fy_concept}:
+            logger.warning(
+                "  %s FY%s: cannot derive Q4 — concept mismatch between FY total (%s) "
+                "and quarters (%s)",
+                line_item,
+                fiscal_year,
+                fy_concept,
+                ", ".join(sorted(q123_concepts.get(key, set()))),
+            )
+            continue
+
+        period_end = str(fyrow["period_end"])
+        accession_no = str(fyrow["accession_no"])
+        rows.append(
+            {
+                "ticker": str(fyrow["ticker"]),
+                "line_item": line_item,
+                "period_end": period_end,
+                "period_type": "Q",
+                "fiscal_year": fiscal_year,
+                "fiscal_period": "Q4",
+                "value": float(fyrow["value"]) - q123_sum[key],
+                "unit": fyrow["unit"],
+                "concept_used": f"{fy_concept}{_Q4_DERIVED_CONCEPT_SUFFIX}",
+                "accession_no": accession_no,
+                "fact_id": f"{accession_no}:{line_item}:Q4derived:{period_end}",
+                "filing_url": fyrow["filing_url"],
+                "form_type": fyrow["form_type"],
+                "filed_date": fyrow["filed_date"],
+                "frame": "",
+            }
+        )
+        emitted.add(key)
+
+    if not rows:
+        return df
+
+    derived = pd.DataFrame(rows, columns=df.columns)
+    logger.info("  Derived %d Q4 income standalone row(s) (FY − Q1−Q2−Q3)", len(derived))
+    return pd.concat([df, derived], ignore_index=True)
+
+
 # ── Export functions ───────────────────────────────────────────────────────────
 
 
@@ -642,6 +845,12 @@ def _export_fact_financials(
         fiscal_pairs = [_calendar_to_fiscal_quarter(pe, fy_end_month) for pe in df["period_end"]]
         df["fiscal_year"] = [fy for fy, _fp in fiscal_pairs]
         df["fiscal_period"] = [fp for _fy, fp in fiscal_pairs]
+
+    # Derive Q4 income standalone (FY − Q1 − Q2 − Q3) for additive flow items.
+    # Runs AFTER the fiscal-label recompute so the Q1/Q2/Q3 operands are the
+    # single standalone rows with correct labels; FY totals are fetched in a
+    # separate query so they never enter the main dedup partition.
+    df = _derive_q4_income_standalone(con, df, fy_end_month)
 
     df = _cash_flow_ytd_to_standalone(df)
     df = _derive_free_cash_flow(df)

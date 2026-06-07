@@ -404,8 +404,12 @@ def test_fact_financials_promotes_fy_balance_rows_to_q4(tmp_path: Path) -> None:
     in fact_financials.csv with ``fiscal_period='Q4'`` and ``period_type='Q'``,
     and provenance must be preserved (accession_no points back to the 10-K).
 
-    Flow items (Revenue, NetIncome) must NOT pick up FY rows — Q4 standalone
-    for flows is computed by subtraction (FY − Q1 − Q2 − Q3) elsewhere.
+    Flow items (Revenue, NetIncome) take a *different* Q4 path: there is no
+    FY-row promotion for them (the FY total is not a standalone quarter), and
+    real XBRL carries no standalone Q4 income fact.  Their Q4 is derived by
+    subtraction (FY − Q1 − Q2 − Q3) in :func:`_derive_q4_income_standalone`.
+    This test asserts the value at the FY-end period_end is the derived Q4
+    standalone ($2,610M), never the promoted FY total ($6,893M).
     """
     db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
     import duckdb
@@ -449,26 +453,311 @@ def test_fact_financials_promotes_fy_balance_rows_to_q4(tmp_path: Path) -> None:
         row["form_type"] == "10-K"
     ), f"Promoted FY row must keep form_type='10-K'; got {row['form_type']!r}"
 
-    # Flow items (Revenue, NetIncome) must NOT pick up FY rows — Q4 standalone
-    # for flows is computed by subtraction elsewhere.
-    flow_fy_rows = df.loc[
-        df["line_item"].isin(["Revenue", "NetIncome", "OperatingIncome"])
-        & df["period_end"].isin(["2023-07-31", "2024-07-31"])
-    ]
-    # Flow items have an explicit Q4 fact in the fixture (fp='Q4'), but never
-    # an FY-only row promoted to Q4 — the value at FY-end period_end must
-    # reflect the Q4 standalone, not the FY total.
-    rev_fy23 = flow_fy_rows.loc[
-        (flow_fy_rows["line_item"] == "Revenue") & (flow_fy_rows["period_end"] == "2023-07-31")
-    ]
-    if not rev_fy23.empty:
-        # Q4 standalone is $2,610M (fp=Q4 in fixture); FY total is $6,893M.
-        # The export must surface the standalone, never the FY total.
-        v = float(rev_fy23.iloc[0]["value"])
-        assert abs(v - 2_610_000_000.0) < 1.0, (
-            f"Revenue at 2023-07-31 should be Q4 standalone $2,610M, never the FY "
-            f"total $6,893M (FY rows must not be promoted for flow items); got ${v:,.0f}"
+    # Flow items take the derivation path, not FY-promotion.  The value at the
+    # FY-end period_end must be the DERIVED Q4 standalone (FY − Q1 − Q2 − Q3),
+    # never the FY total.  Fixture FY23 Revenue: 6893 − (1244+1316+1723) = 2610.
+    rev_fy23 = df.loc[(df["line_item"] == "Revenue") & (df["period_end"] == "2023-07-31")]
+    assert len(rev_fy23) == 1, (
+        f"Expected exactly one derived Q4 Revenue row at 2023-07-31; got {len(rev_fy23)}.\n"
+        "Flow-item Q4 must be derived by subtraction, not dropped or duplicated."
+    )
+    rev_row = rev_fy23.iloc[0]
+    v = float(rev_row["value"])
+    assert abs(v - 2_610_000_000.0) < 1.0, (
+        f"Revenue at 2023-07-31 should be derived Q4 standalone $2,610M, never the FY "
+        f"total $6,893M (FY rows must not be promoted for flow items); got ${v:,.0f}"
+    )
+    assert (
+        rev_row["fiscal_period"] == "Q4" and rev_row["period_type"] == "Q"
+    ), f"Derived Revenue Q4 must be (period_type='Q', fiscal_period='Q4'); got {rev_row.to_dict()}"
+
+
+# ── Income-statement Q4 derivation (FY − Q1 − Q2 − Q3) ─────────────────────────
+
+
+def _export_panw(tmp_path: Path) -> pd.DataFrame:
+    """Build the PANW fixture warehouse and return the fact_financials export."""
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        return _export_fact_financials(con, fy_end_month=7)
+    finally:
+        con.close()
+
+
+def _q_row(
+    ticker: str,
+    line_item: str,
+    period_end: str,
+    fiscal_year: int,
+    fiscal_period: str,
+    value: float,
+    concept_used: str,
+) -> dict[str, Any]:
+    """A standalone-quarter row dict with all 15 fact_financials columns."""
+    return {
+        "ticker": ticker,
+        "line_item": line_item,
+        "period_end": period_end,
+        "period_type": "Q",
+        "fiscal_year": fiscal_year,
+        "fiscal_period": fiscal_period,
+        "value": value,
+        "unit": "USD",
+        "concept_used": concept_used,
+        "accession_no": "0001327567-00-000000",
+        "fact_id": f"{line_item}:{period_end}",
+        "filing_url": "url",
+        "form_type": "10-Q",
+        "filed_date": "2024-01-01",
+        "frame": "",
+    }
+
+
+def test_derive_q4_income_standalone_revenue(tmp_path: Path) -> None:
+    """Revenue Q4 is derived as FY − Q1 − Q2 − Q3, with FY 10-K provenance.
+
+    Real XBRL has no standalone Q4 income fact; only the 10-K FY total plus
+    the three 10-Q standalone quarters.  The export must compute the Q4
+    standalone and stamp it at the FY-end period_end.
+
+    Fixture arithmetic (Revenue, $M):
+      FY23 Q4 = 6893 − (1244 + 1316 + 1723) = 2610
+      FY24 Q4 = 8032 − (1878 + 1978 + 1980) = 2196
+    """
+    df = _export_panw(tmp_path)
+
+    expected = {"2023-07-31": (2_610_000_000.0, 2023), "2024-07-31": (2_196_000_000.0, 2024)}
+    for period_end, (exp_val, exp_fy) in expected.items():
+        rows = df.loc[(df["line_item"] == "Revenue") & (df["period_end"] == period_end)]
+        assert (
+            len(rows) == 1
+        ), f"Expected exactly one derived Q4 Revenue row at {period_end}; got {len(rows)}"
+        row = rows.iloc[0]
+        assert abs(float(row["value"]) - exp_val) < 1.0, (
+            f"Derived Q4 Revenue at {period_end} should be ${exp_val:,.0f}; "
+            f"got ${float(row['value']):,.0f}"
         )
+        assert row["period_type"] == "Q"
+        assert row["fiscal_period"] == "Q4"
+        assert int(row["fiscal_year"]) == exp_fy
+        # Provenance inherited from the FY 10-K, labelled as derived.
+        assert (
+            row["form_type"] == "10-K"
+        ), f"Derived Q4 must inherit the FY 10-K form_type; got {row['form_type']!r}"
+        assert "derived" in str(row["concept_used"]).lower(), (
+            "Derived Q4 row must carry a 'derived' marker in concept_used so the "
+            f"provenance audit treats it as sourced-but-derived; got {row['concept_used']!r}"
+        )
+        assert str(row["accession_no"]).startswith(
+            "0001327567-"
+        ), f"Derived Q4 must inherit a real accession_no; got {row['accession_no']!r}"
+
+
+def test_derive_q4_income_handles_loss_quarters(tmp_path: Path) -> None:
+    """Sign correctness for loss quarters — subtraction must preserve negatives.
+
+    Fixture arithmetic ($M):
+      NetIncome  FY23 Q4 = -898 − (-224 + -220 + -194) = -260
+      NetIncome  FY24 Q4 =  2577 − (-110 + 1080 + 1122) =  485
+      OperatingIncome FY23 Q4 = -643 − (-152 + -158 + -211) = -122
+      OperatingIncome FY24 Q4 =   363 − ( -51 +   49 +   93) =  272
+    """
+    df = _export_panw(tmp_path)
+
+    cases = [
+        ("NetIncome", "2023-07-31", -260_000_000.0),
+        ("NetIncome", "2024-07-31", 485_000_000.0),
+        ("OperatingIncome", "2023-07-31", -122_000_000.0),
+        ("OperatingIncome", "2024-07-31", 272_000_000.0),
+    ]
+    for line_item, period_end, exp_val in cases:
+        rows = df.loc[(df["line_item"] == line_item) & (df["period_end"] == period_end)]
+        assert (
+            len(rows) == 1
+        ), f"Expected one derived Q4 {line_item} row at {period_end}; got {len(rows)}"
+        got = float(rows.iloc[0]["value"])
+        assert (
+            abs(got - exp_val) < 1.0
+        ), f"Derived Q4 {line_item} at {period_end} should be ${exp_val:,.0f}; got ${got:,.0f}"
+
+
+def test_derive_q4_income_skips_incomplete_years(tmp_path: Path) -> None:
+    """A year missing any of Q1/Q2/Q3 (or the FY total) yields no Q4 row.
+
+    The fixture carries only FY2025 Q1 (period_end 2024-10-31) and no FY2025
+    total, so no FY2025 Q4 income row may be fabricated.
+    """
+    df = _export_panw(tmp_path)
+
+    income_items = ["Revenue", "NetIncome", "OperatingIncome"]
+    # FY2025 ends 2025-07-31 — no such row may exist for any income item.
+    fy25_q4 = df.loc[df["line_item"].isin(income_items) & (df["period_end"] == "2025-07-31")]
+    assert fy25_q4.empty, (
+        "No FY2025 Q4 income row may be derived — the fixture has only FY25 Q1 and "
+        f"no FY25 total. Got:\n{fy25_q4[['line_item', 'period_end', 'value']]}"
+    )
+
+
+def test_derive_q4_income_defers_to_explicit_filed_q4(tmp_path: Path) -> None:
+    """If an explicit filed Q4 exists, it is kept — no second (derived) row.
+
+    The derivation is a fallback. We inject a real filed fp='Q4' Revenue fact
+    into a copy of the df and assert the function neither overwrites it nor
+    appends a duplicate for the same (line_item, fiscal_year).
+    """
+    from src.export_for_tableau import _Q4_DERIVED_CONCEPT_SUFFIX, _derive_q4_income_standalone
+
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _export_fact_financials(con, fy_end_month=7)
+        # df already contains a derived FY23 Q4 Revenue (2610). Simulate the
+        # alternate world where EDGAR filed an explicit Q4 by replacing that
+        # row with a non-derived, differently-valued one, then re-run the
+        # derivation and confirm it does not re-add a derived row on top.
+        mask = (df["line_item"] == "Revenue") & (df["period_end"] == "2023-07-31")
+        df.loc[mask, "value"] = 2_599_000_000.0
+        df.loc[mask, "concept_used"] = "RevenueFromContractWithCustomerExcludingAssessedTax"
+        out = _derive_q4_income_standalone(con, df, fy_end_month=7)
+    finally:
+        con.close()
+
+    rev_q4 = out.loc[(out["line_item"] == "Revenue") & (out["period_end"] == "2023-07-31")]
+    assert (
+        len(rev_q4) == 1
+    ), f"Existing filed Q4 must not be duplicated by the derivation; got {len(rev_q4)} rows"
+    row = rev_q4.iloc[0]
+    assert (
+        abs(float(row["value"]) - 2_599_000_000.0) < 1.0
+    ), "Existing filed Q4 value must be preserved, not overwritten by FY−Q1−Q2−Q3"
+    assert not str(row["concept_used"]).endswith(
+        _Q4_DERIVED_CONCEPT_SUFFIX
+    ), "A pre-existing filed Q4 must not be relabelled as derived"
+
+
+def test_derive_q4_income_excludes_nonadditive_and_balance_items(tmp_path: Path) -> None:
+    """Weighted-average and balance-sheet items must NOT be derived by subtraction.
+
+    DilutedShares is a weighted average (non-additive) and DeferredRevenue is
+    an instantaneous balance whose Q4 comes from the FY-end promotion path, not
+    a four-term subtraction. Neither may carry the derived-Q4 concept marker.
+    """
+    from src.export_for_tableau import _Q4_DERIVABLE_INCOME_ITEMS, _Q4_DERIVED_CONCEPT_SUFFIX
+
+    df = _export_panw(tmp_path)
+
+    # The allowlist is income flows only — never DilutedShares / SharesOutstanding.
+    assert "DilutedShares" not in _Q4_DERIVABLE_INCOME_ITEMS
+    assert "SharesOutstanding" not in _Q4_DERIVABLE_INCOME_ITEMS
+
+    derived = df.loc[df["concept_used"].astype(str).str.endswith(_Q4_DERIVED_CONCEPT_SUFFIX)]
+    derived_items = set(derived["line_item"].unique())
+    assert derived_items <= _Q4_DERIVABLE_INCOME_ITEMS, (
+        f"Only allowlisted income flows may be derived; leaked: "
+        f"{derived_items - _Q4_DERIVABLE_INCOME_ITEMS}"
+    )
+    # DeferredRevenue Q4 (if present in this fixture) must NOT be a derived row.
+    def_rev_q4 = df.loc[(df["line_item"] == "DeferredRevenue") & (df["period_end"] == "2023-07-31")]
+    if not def_rev_q4.empty:
+        assert not str(def_rev_q4.iloc[0]["concept_used"]).endswith(
+            _Q4_DERIVED_CONCEPT_SUFFIX
+        ), "DeferredRevenue Q4 must come from FY-end promotion, not subtraction"
+
+
+def test_derive_q4_income_is_csv_only_not_warehouse(tmp_path: Path) -> None:
+    """Q4 derivation is an export-layer concern; warehouse views stay reported-only.
+
+    The derivation lives in export_for_tableau (CSV output). The DuckDB view
+    v_income_statement_quarterly must NOT gain a derived Q4 income row, so that
+    forecast/variance consumers reading the warehouse never train on a computed
+    residual mixed in with reported facts.
+    """
+    db_path = _build_warehouse_tmp("panw_companyfacts.json", "PANW", 1327567, tmp_path)
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _export_fact_financials(con, fy_end_month=7)
+        # v_income_statement_quarterly is wide (one column per line item), so a
+        # derived Q4 would show up as a row with fiscal_period='Q4'. There must
+        # be none — the view carries only reported quarters plus the FY total.
+        view_q4 = con.execute(
+            """SELECT COUNT(*) FROM v_income_statement_quarterly
+               WHERE fiscal_period = 'Q4'"""
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+    # The export DID derive Q4 Revenue...
+    assert not df.loc[
+        (df["line_item"] == "Revenue") & (df["fiscal_period"] == "Q4")
+    ].empty, "Export should contain derived Q4 Revenue rows"
+    # ...but the warehouse view did NOT.
+    assert view_q4 == 0, (
+        f"v_income_statement_quarterly must not contain derived Q4 Revenue (got {view_q4}); "
+        "the derivation must stay in the CSV export layer only"
+    )
+
+
+def test_derive_q4_income_dedups_multiple_fy_totals_in_one_year(tmp_path: Path) -> None:
+    """At most one derived Q4 per (ticker, line_item, fiscal_year).
+
+    The FY-totals query dedups on period_end, but a derived Q4 is keyed on
+    fiscal_year. If two FY totals ever map to the same fiscal year — e.g. two
+    period_ends in the same fiscal-end month (2024-07-26 and 2024-07-31 both
+    land in FY2024 Q4 for a July fiscal year) — the function must still emit a
+    single Q4 row, not two, or Tableau would silently double-count.
+
+    Exercises the guard directly against a synthetic in-memory v_canonical_facts.
+    """
+    import duckdb
+
+    from src.export_for_tableau import _derive_q4_income_standalone
+
+    con = duckdb.connect(":memory:")
+    cols = (
+        "ticker, line_item, period_end, period_type, fiscal_year, fiscal_period, "
+        "value, unit, concept_used, accession_no, fact_id, filing_url, form_type, "
+        "filed_date, frame"
+    )
+    con.execute(f"CREATE TABLE v_canonical_facts ({cols.replace(', ', ' VARCHAR, ')} VARCHAR)")
+    # Two FY Revenue totals for the same fiscal year at distinct period_ends in
+    # the fiscal-end month — both recompute to FY2024 Q4.
+    rev_concept = "RevenueFromContractWithCustomerExcludingAssessedTax"
+    con.execute(
+        """INSERT INTO v_canonical_facts VALUES
+        ('PANW','Revenue','2024-07-31','FY','2024','FY','8000000000','USD',?,
+         '0001327567-24-000030','f1','url1','10-K','2024-09-06',''),
+        ('PANW','Revenue','2024-07-26','FY','2024','FY','8000000000','USD',?,
+         '0001327567-24-000031','f2','url2','10-K','2024-09-07','')""",
+        [rev_concept, rev_concept],
+    )
+
+    # df with the three standalone quarters (sum 6000 → Q4 derives to 2000).
+    df = pd.DataFrame(
+        [
+            _q_row("PANW", "Revenue", "2023-10-31", 2024, "Q1", 1900000000.0, rev_concept),
+            _q_row("PANW", "Revenue", "2024-01-31", 2024, "Q2", 2000000000.0, rev_concept),
+            _q_row("PANW", "Revenue", "2024-04-30", 2024, "Q3", 2100000000.0, rev_concept),
+        ]
+    )
+    try:
+        out = _derive_q4_income_standalone(con, df, fy_end_month=7)
+    finally:
+        con.close()
+
+    q4 = out.loc[(out["line_item"] == "Revenue") & (out["fiscal_period"] == "Q4")]
+    assert (
+        len(q4) == 1
+    ), f"Two FY totals mapping to one fiscal year must still yield ONE Q4 row; got {len(q4)}"
+    assert (
+        abs(float(q4.iloc[0]["value"]) - 2_000_000_000.0) < 1.0
+    ), f"Derived Q4 should be 8000 − (1900+2000+2100) = 2000M; got {float(q4.iloc[0]['value']):,.0f}"
 
 
 def test_fact_fcf_bridge_export_emits_seven_components_per_quarter(tmp_path: Path) -> None:
