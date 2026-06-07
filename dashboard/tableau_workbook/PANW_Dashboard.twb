@@ -1910,7 +1910,7 @@
           </zone>
           <zone forceUpdate='true' h='4140' id='13' type-v2='text' w='98770' x='615' y='94825'>
             <formatted-text>
-              <run fontalignment='1' fontcolor='#000000'>Source: SEC EDGAR XBRL  |  Data through FY2026 Q2 (10-Q filed 2026-02-18)  |  github.com/fluffypotato999/ai-financial-analyst</run>
+              <run fontalignment='1' fontcolor='#000000'>Source: SEC EDGAR XBRL  |  Data through FY2026 Q2 (10-Q filed 2026-02-18)  |  github.com/svdend/ai-financial-analyst</run>
             </formatted-text>
             <zone-style>
               <format attr='border-color' value='#000000' />
@@ -1983,7 +1983,7 @@
                 </zone>
                 <zone forceUpdate='true' h='4140' id='13' type-v2='text' w='98770' x='615' y='94825'>
                   <formatted-text>
-                    <run fontalignment='1' fontcolor='#000000'>Source: SEC EDGAR XBRL  |  Data through FY2026 Q2 (10-Q filed 2026-02-18)  |  github.com/fluffypotato999/ai-financial-analyst</run>
+                    <run fontalignment='1' fontcolor='#000000'>Source: SEC EDGAR XBRL  |  Data through FY2026 Q2 (10-Q filed 2026-02-18)  |  github.com/svdend/ai-financial-analyst</run>
                   </formatted-text>
                   <zone-style>
                     <format attr='border-color' value='#000000' />
@@ -2048,7 +2048,7 @@
           </zone>
           <zone forceUpdate='true' h='3000' id='405' type-v2='text' w='98770' x='615' y='94000'>
             <formatted-text>
-              <run fontalignment='1' fontcolor='#000000'>Source: SEC EDGAR XBRL  |  Data through FY2026 Q2  |  github.com/fluffypotato999/ai-financial-analyst</run>
+              <run fontalignment='1' fontcolor='#000000'>Source: SEC EDGAR XBRL  |  Data through FY2026 Q2  |  github.com/svdend/ai-financial-analyst</run>
             </formatted-text>
             <zone-style>
               <format attr='border-color' value='#000000' />
@@ -2165,7 +2165,7 @@
           </zone>
           <zone forceUpdate='true' h='3000' id='505' type-v2='text' w='98770' x='615' y='94000'>
             <formatted-text>
-              <run fontalignment='1' fontcolor='#000000'>Source: SEC EDGAR XBRL  |  Data through FY2026 Q2  |  github.com/fluffypotato999/ai-financial-analyst</run>
+              <run fontalignment='1' fontcolor='#000000'>Source: SEC EDGAR XBRL  |  Data through FY2026 Q2  |  github.com/svdend/ai-financial-analyst</run>
             </formatted-text>
             <zone-style>
               <format attr='border-color' value='#000000' />

@@ -1,4 +1,4 @@
-# Tableau Republish Checklist (for fluffypotato999)
+# Tableau Republish Checklist (for svdend)
 
 A condensed, click-by-click version of `Tableau_Setup.md` for the operator step.
 Use this when the spec in the main doc has drifted ahead of what's currently
