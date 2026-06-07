@@ -3,6 +3,15 @@
 > End-to-end financial forecasting for US-listed enterprise security and software
 > vendors, built on free public data (SEC EDGAR + FRED).
 
+[![Python](https://img.shields.io/badge/python-3.11-3776ab?style=flat-square&logo=python&logoColor=white)](.python-version)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
+[![Live dashboard](https://img.shields.io/badge/Tableau-live%20dashboard-e97627?style=flat-square&logo=tableau&logoColor=white)](https://public.tableau.com/app/profile/sid.den/viz/PANW_Dashboard/Dashboard1)
+![Data](https://img.shields.io/badge/data-SEC%20EDGAR%20%2B%20FRED-0b5394?style=flat-square)
+
+![PANW three-model revenue forecast](dashboard/screenshots/PANW_three_model_forecast.png)
+
+> Three independent forecasts — Prophet, AutoARIMA, and a FRED-regularised Lasso — over PANW's ~20 quarterly filings. The ensemble shows the *range* of plausible outcomes; the confidence intervals are deliberately wide at small sample sizes rather than a false-precision point estimate.
+
 ---
 
 ## TL;DR for reviewers
@@ -11,6 +20,29 @@
 - **Architectural invariant:** all arithmetic happens in deterministic Python/SQL before the LLM is called; the LLM writes narrative only, and every cited number must trace back to an SEC accession number (parse-then-compare hallucination guard enforces this in CI)
 - **Provenance:** seven columns — `concept_used`, `accession_no`, `fact_id`, `filing_url`, `form_type`, `filed_date`, `frame` — flow from XBRL ingest through the Excel Sources sheet and Tableau tooltips
 - **Entry points:** `make demo TICKER=PANW` runs the full pipeline; `src/generate_commentary.py` is the LLM call; `tests/eval/` is the ground-truth harness
+
+---
+
+## Quickstart
+
+Requires Python 3.11 (see `.python-version`).
+
+```bash
+git clone https://github.com/svdend/ai-financial-analyst
+cd ai-financial-analyst
+pip install -r requirements.txt
+cp .env.example .env          # then add the credentials below
+
+make demo TICKER=PANW         # ingest → warehouse → model → forecast → commentary (dry-run)
+```
+
+| Credential | Needed for | Cost |
+|---|---|---|
+| `SEC_USER_AGENT` (a contact email) | SEC EDGAR ingestion — required | free |
+| `FRED_API_KEY` | macro-regularised forecast | free |
+| `ANTHROPIC_API_KEY` | live LLM commentary (`make commentary LIVE=1`) | paid — dry-run is free |
+
+`make demo` defaults to dry-run, so the end-to-end pipeline runs with **no paid API calls**.
 
 ---
 
