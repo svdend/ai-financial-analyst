@@ -190,14 +190,29 @@ def _build_historical_financials(ticker: str, fy_end_month: int = 12) -> pd.Data
 
     # Carry the Revenue row's provenance triple as the canonical accession for
     # the period — the bundle's previous schema used the Revenue accession too.
+    # ``concept_used`` is carried so a *derived* Q4 row (value computed as
+    # FY − Q1 − Q2 − Q3, sourced from the 10-K's annual total) is flagged as
+    # such: its accession points at the 10-K, but the 10-K reports only the
+    # annual figure, so the provenance audit must not treat the quarterly value
+    # as a verbatim line item in that filing.
     revenue_provenance = (
         is_only[is_only["line_item"] == "Revenue"][
-            ["period_end", "fact_id", "accession_no", "filing_url"]
+            ["period_end", "fact_id", "accession_no", "filing_url", "concept_used"]
         ]
         .drop_duplicates(subset=["period_end"])
         .rename(columns={"fact_id": "revenue_fact_id"})
     )
     wide = values.merge(revenue_provenance, on="period_end", how="left")
+    # Surface a compact, human-readable provenance flag rather than the raw
+    # concept string: "derived" when the Revenue value was computed, else
+    # "reported". Keeps the CSV self-describing for the NotebookLM audit.
+    wide["revenue_provenance"] = (
+        wide["concept_used"]
+        .fillna("")
+        .str.contains("derived", case=False)
+        .map({True: "derived", False: "reported"})
+    )
+    wide = wide.drop(columns=["concept_used"])
 
     # Keep the most-recent 12 quarters (the bundle's prior LIMIT 12 contract).
     wide = wide.sort_values(["fiscal_year", "fiscal_period"], ascending=False).head(12)
@@ -212,6 +227,7 @@ def _build_historical_financials(ticker: str, fy_end_month: int = 12) -> pd.Data
         "revenue_fact_id",
         "accession_no",
         "filing_url",
+        "revenue_provenance",
     ]
     return wide[[c for c in ordered_cols if c in wide.columns]].reset_index(drop=True)
 
@@ -921,7 +937,8 @@ def build(ticker: str | None = None) -> dict[str, Path]:
         df_hist.to_csv(path, index=False)
     else:
         path.write_text(
-            "period_end,fiscal_year,fiscal_period,Revenue,accession_no,filing_url\n"
+            "period_end,fiscal_year,fiscal_period,Revenue,accession_no,filing_url,"
+            "revenue_provenance\n"
             "(run make warehouse TICKER=<ticker> to populate)\n",
             encoding="utf-8",
         )
