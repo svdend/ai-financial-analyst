@@ -4,7 +4,6 @@
 > vendors, built on free public data (SEC EDGAR + FRED).
 
 [![Python](https://img.shields.io/badge/python-3.11-3776ab?style=flat-square&logo=python&logoColor=white)](.python-version)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Live dashboard](https://img.shields.io/badge/Tableau-live%20dashboard-e97627?style=flat-square&logo=tableau&logoColor=white)](https://public.tableau.com/app/profile/sid.den/viz/PANW_Dashboard/Dashboard1)
 ![Data](https://img.shields.io/badge/data-SEC%20EDGAR%20%2B%20FRED-0b5394?style=flat-square)
 
